@@ -13,8 +13,11 @@ session running in an in-browser terminal.
 ## Requirements
 
 - Node.js 20.12 or newer (no npm dependencies)
-- [ttyd](https://github.com/tsl0922/ttyd) for the browser terminal (`brew install ttyd`)
+- [ttyd](https://github.com/tsl0922/ttyd) for the browser terminal (`brew install ttyd`, or `sudo apt install ttyd` on Ubuntu/WSL)
 - The `claude` CLI (Claude Code) on your PATH
+
+> **WSL/Ubuntu:** the `ttyd` package starts a system service on port 7681 that shows a `login:` prompt instead of
+> Claude. Disable it with `sudo systemctl disable --now ttyd`.
 
 ## Run it
 

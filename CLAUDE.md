@@ -147,6 +147,8 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   Normal card work may call the card's own APIs (`POST /api/cards/<n>` for status, `.../tasks` for tasks);
   don't send other mutating requests just to test.
 - If a change needs a server restart (it usually doesn't, see below), say so and let the user do it.
+- **WSL/Ubuntu:** if the terminal pane shows a `login:` prompt, the `ttyd` apt package's system service is holding
+  port 7681; the user fixes it with `sudo systemctl disable --now ttyd`. Don't change the launchers for it.
 - Never reload or restructure `shell.html` casually: it hosts the terminal iframe, and reloading it restarts
   the terminal's `claude --resume` process. It is intentionally served without the live-reload snippet.
 
