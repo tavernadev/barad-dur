@@ -69,8 +69,13 @@
   .item[draggable="true"] { cursor:grab; }
   .item.dragging { opacity:.5; }
   main { min-height:60vh; border-radius:10px; }
-  .toggle { font:inherit; font-size:13px; color:var(--muted); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:3px 12px; cursor:pointer; }
-  .toggle:hover { border-color:var(--accent); color:var(--accent); }
+  /* status filters: each chip shows or hides its status; lit = shown */
+  .filters { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .chip { --c:#8b949e; font:inherit; font-size:13px; font-weight:600; cursor:pointer; color:var(--muted); background:transparent; border:1px solid var(--line); border-radius:999px; padding:3px 12px; }
+  .chip[data-value="Scoping"] { --c:#a371f7; } .chip[data-value="In Progress"] { --c:#4493f8; } .chip[data-value="Done"] { --c:#3fb950; }
+  .chip:hover { border-color:color-mix(in srgb, var(--c) 70%, var(--line)); }
+  .chip[aria-pressed="true"] { color:color-mix(in srgb, var(--c) 70%, var(--fg)); background:color-mix(in srgb, var(--c) 16%, var(--bg)); border-color:color-mix(in srgb, var(--c) 55%, var(--line)); }
+  .chip:focus-visible { outline:2px solid var(--accent); }
   .card.done, .item.done { opacity:.6; }
   main.drop-over { outline:2px dashed var(--accent); outline-offset:6px; background:color-mix(in srgb, var(--accent) 6%, transparent); }
 </style>
@@ -81,7 +86,7 @@
     <main>
       <div class="head">
         <h1>Topics</h1>
-        <button class="toggle" id="show-done" type="button" hidden></button>
+        <div class="filters" id="filters" role="group" aria-label="Filter topics by status"></div>
       </div>
       <p class="sub">Cards you are working on and tracking. Each one is a folder under <code>topics/&lt;number&gt;/</code>.</p>
       <div class="grid" id="grid"></div>
@@ -146,16 +151,29 @@
   });
 
   loadConfig().then(() => fetch('/api/cards')).then((r) => r.json()).then((cards) => {
-    // Done cards live in done/ folders and are hidden unless you ask (the choice is remembered).
-    const showDone = localStorage.getItem('workspace.showDone') === '1';
-    const doneCount = cards.filter((c) => c.done).length;
-    const toggle = document.getElementById('show-done');
-    toggle.hidden = doneCount === 0;
-    toggle.textContent = (showDone ? 'Hide done' : 'Show done') + ' (' + doneCount + ')';
-    toggle.addEventListener('click', () => { localStorage.setItem('workspace.showDone', showDone ? '' : '1'); location.reload(); });
-    const visible = (c) => showDone || !c.done;
-    const topics = cards.filter((c) => !c.inbox && visible(c)).sort(byNumber);
-    const inbox = cards.filter((c) => c.inbox && visible(c)).sort(byNumber);
+    // Status filters (remembered in the browser), each one independent: a lit chip shows that status, an unlit one hides it.
+    // Done is off by default (those cards are archived in done/ folders). Done applies to both columns; In Progress and
+    // Scoping apply to Topics. Other statuses (Pending, Code Review, Testing) are always shown.
+    const FILTERS = ['Done', 'In Progress', 'Scoping'];
+    const DEFAULTS = { 'Done': false, 'In Progress': true, 'Scoping': true };
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('workspace.statusFilters') || '{}') || {}; } catch { /* use the defaults */ }
+    const lit = (st) => (typeof saved[st] === 'boolean' ? saved[st] : DEFAULTS[st]);
+    const shows = (c, inTopics) => {
+      if (c.done || c.status === 'Done') return lit('Done');
+      if (inTopics && (c.status === 'In Progress' || c.status === 'Scoping')) return lit(c.status);
+      return true;
+    };
+    const countOf = (st) => cards.filter((c) => (st === 'Done' ? c.done || c.status === 'Done' : !c.inbox && !c.done && c.status === st)).length;
+    const filtersEl = document.getElementById('filters');
+    filtersEl.innerHTML = FILTERS.map((st) => `<button class="chip" type="button" data-value="${esc(st)}" aria-pressed="${lit(st)}" title="${lit(st) ? 'Hide' : 'Show'} ${esc(st)} cards">${esc(st)} (${countOf(st)})</button>`).join('');
+    filtersEl.querySelectorAll('.chip').forEach((btn) => btn.addEventListener('click', () => {
+      const st = btn.dataset.value;
+      localStorage.setItem('workspace.statusFilters', JSON.stringify({ ...Object.fromEntries(FILTERS.map((f) => [f, lit(f)])), [st]: !lit(st) }));
+      location.reload();
+    }));
+    const topics = cards.filter((c) => !c.inbox && shows(c, true)).sort(byNumber);
+    const inbox = cards.filter((c) => c.inbox && shows(c, false)).sort(byNumber);
 
     // ---- Inbox list
     const inboxEl = document.getElementById('inbox');
@@ -211,8 +229,8 @@
     // ---- Topics grid (title only)
     const grid = document.getElementById('grid');
     if (!topics.length) {
-      const hidden = cards.filter((c) => !c.inbox && c.done).length;
-      grid.innerHTML = '<div class="empty">' + (hidden ? 'No active topics. ' + hidden + ' done ' + (hidden === 1 ? 'is' : 'are') + ' hidden.' : 'No topics yet.') + '</div>';
+      const hidden = cards.filter((c) => !c.inbox && !shows(c, true)).length;
+      grid.innerHTML = '<div class="empty">' + (hidden ? 'No topics match the filters. ' + hidden + ' ' + (hidden === 1 ? 'is' : 'are') + ' hidden: use the status buttons above.' : 'No topics yet.') + '</div>';
       return;
     }
     grid.innerHTML = topics.map((c) => `

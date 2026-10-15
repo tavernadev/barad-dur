@@ -3,6 +3,14 @@
 // Tasks live in cards/<id>/tasks.json; the card's own Claude session and you both write to them.
 // Clicking a task opens its detail as a card layered over the report (same page, not a popup/dialog).
 (function () {
+  // Inside the shell, the permanent header has the "Home" link, so remove the page's own link back to "/" (and its nav bar
+  // when nothing else is left in it). Hand-written reports keep their other nav links.
+  if (window.parent !== window) {
+    document.querySelectorAll('nav a[href="/"]').forEach(function (a) {
+      var nav = a.closest('nav'); a.remove();
+      if (nav && !nav.children.length) nav.remove();
+    });
+  }
   var id = (location.pathname.match(/^\/content\/([^/]+)\//) || [])[1];
   if (!id) return;
   var API = '/api/cards/' + encodeURIComponent(id) + '/tasks';
@@ -166,7 +174,7 @@
       li.tabIndex = 0; li.setAttribute('role', 'button'); li.dataset.id = t.id;
       if (t.status === 'Done') li.className = 'done';
       if (t.id === openId) li.classList.add('sel');
-      var n = document.createElement('span'); n.className = 'n'; n.textContent = '#' + t.order;
+      var n = document.createElement('span'); n.className = 'n'; n.textContent = '#' + (t.number || t.order); // the permanent task number, not the position
       var title = document.createElement('span'); title.className = 't'; title.textContent = t.title;
       var chips = document.createElement('span'); chips.className = 'chips';
       chips.appendChild(chip(t.status));
@@ -264,7 +272,7 @@
   }
 
   function updateCard(t) {
-    ref.ct.textContent = 'Task #' + t.order + ' of ' + tasks.length;
+    ref.ct.textContent = 'Task #' + (t.number || t.order) + ' \u00b7 position ' + t.order + ' of ' + tasks.length;
     if (document.activeElement !== ref.ttl) ref.ttl.value = t.title;
     ref.status.value = t.status; ref.status.dataset.value = t.status;
     ref.priority.value = t.priority; ref.priority.dataset.value = t.priority;

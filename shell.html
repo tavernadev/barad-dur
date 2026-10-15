@@ -10,7 +10,21 @@
   :root { --bg:#0d1117; --line:#3d444d; --accent:#4493f8; }
   * { box-sizing:border-box; }
   html, body { height:100%; margin:0; background:var(--bg); overflow:hidden; }
-  #split { display:flex; height:100%; width:100%; }
+  body { display:flex; flex-direction:column; }
+  /* Permanent header: it lives in the shell, so it stays on every page and is never reloaded with the content. It is the menu. */
+  #bar { flex:0 0 44px; display:flex; align-items:center; justify-content:space-between; padding:0 12px; background:#161b22; border-bottom:1px solid var(--line); color:#e6edf3; font:600 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  #bar button { font:inherit; color:inherit; background:none; border:1px solid transparent; border-radius:8px; cursor:pointer; }
+  #bar button:hover { background:#21262d; border-color:var(--line); }
+  #bar button:focus-visible { outline:2px solid var(--accent); }
+  #bar .left { display:flex; align-items:center; gap:6px; }
+  #brand { display:flex; align-items:center; gap:8px; padding:5px 8px; }
+  #bar #home-link { color:#4493f8; font-weight:600; padding:6px 10px; }
+  #home-link[hidden] { display:none; }
+  #brand img { width:22px; height:22px; display:block; }
+  #bar .menu { display:flex; align-items:center; gap:4px; }
+  .icon-btn { width:34px; height:34px; display:flex; align-items:center; justify-content:center; padding:0; }
+  .icon-btn svg { width:20px; height:20px; display:block; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  #split { display:flex; flex:1 1 0; min-height:0; width:100%; }
   #left  { flex:0 0 var(--left, 50%); min-width:200px; }
   #right { flex:1 1 0; min-width:200px; }
   iframe { width:100%; height:100%; border:0; display:block; background:var(--bg); }
@@ -22,6 +36,18 @@
 </style>
 </head>
 <body>
+<header id="bar">
+  <div class="left">
+    <button id="brand" type="button" title="Main page"><img src="/static/favicon.png" alt=""><span id="brand-name">Barad-dûr</span></button>
+    <button id="home-link" type="button" title="Back to the main page" hidden>&larr; Home</button>
+  </div>
+  <nav class="menu" aria-label="Menu">
+    <!-- Settings: nothing behind it yet -->
+    <button id="settings" class="icon-btn" type="button" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </nav>
+</header>
 <div id="split">
   <div id="left"><iframe id="term" title="Terminal"></iframe></div>
   <div id="gutter" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
@@ -40,7 +66,15 @@
   // Tab title says which session this tab is: "<app name> - main" on the home tab, "<app name> - #<card number>" on a card.
   const tabTitle = () => (cfg.appName || 'Barad-d\u00fbr') + ' - ' + (sessionFor(location.pathname) === 'main' ? 'main' : '#' + sessionFor(location.pathname));
   document.title = tabTitle();
-  const ready = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; document.title = tabTitle(); }).catch(() => {});
+  const setBrand = () => { document.getElementById('brand-name').textContent = cfg.appName || 'Barad-d\u00fbr'; };
+  const ready = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; document.title = tabTitle(); setBrand(); }).catch(() => {});
+  // The brand goes to the main page: focus the home tab (opening it if needed); on the home tab it does nothing.
+  const goHome = () => { if (sessionFor(location.pathname) !== 'main') openTab('/', 'home'); };
+  document.getElementById('brand').addEventListener('click', goHome);
+  // "Home" is only shown on card tabs (the home tab is already home); it replaces the page's own "All cards" link.
+  const homeLink = document.getElementById('home-link');
+  homeLink.hidden = sessionFor(location.pathname) === 'main';
+  homeLink.addEventListener('click', goHome);
   window.name = sessionFor(location.pathname) === 'main' ? 'home' : 'card-' + sessionFor(location.pathname);
   const layout = (p) => {
     const id = sessionFor(p);

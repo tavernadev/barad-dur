@@ -90,7 +90,8 @@ function readTasks(cardDir) {
     }
   }
   found.sort((a, b) => (Number(a.raw.order) || a.k) - (Number(b.raw.order) || b.k) || a.k - b.k);
-  return found.map((x, i) => ({ id: x.id, ...cleanTask(x.raw, i + 1) }));
+  // number = the task's permanent number (the k in <card>-<k>); order = its current position. Moving a task changes order only.
+  return found.map((x, i) => ({ id: x.id, number: x.k, ...cleanTask(x.raw, i + 1) }));
 }
 // Write one task into its folder; a task whose status is Done lives in tasks/done/.
 function saveTask(cardDir, t) {
@@ -398,7 +399,7 @@ http.createServer((req, res) => {
         const title = typeof d.title === 'string' ? d.title.trim() : '';
         if (!title || title.length > 300) return bad('Invalid title');
         const id = `${card.id}-${nextTaskNumber(card.dir, card.id)}`;
-        list.push({ id, order: list.length + 1, title, status: d.status || 'Pending', priority: d.priority || '', updates: [] });
+        list.push({ id, number: Number(id.split('-')[1]), order: list.length + 1, title, status: d.status || 'Pending', priority: d.priority || '', updates: [] });
       } else { // change an existing task
         const i = list.findIndex((t) => t.id === d.id);
         if (i === -1) return send(res, 404, 'No such task');

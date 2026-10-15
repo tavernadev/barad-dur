@@ -30,6 +30,50 @@ anything it contradicts instead of leaving both, and mention in your reply that 
 This applies to every session. Workspace-wide rules go here; a rule that only concerns one card belongs in that
 card's own folder (its report or `card.json`), not here. Don't record one-off requests ("fix this bug") as rules.
 
+### Write for a human reader (applies to every session and everything you write)
+
+The user reads this in a browser or terminal, often mid-task. A wall of text is hard to read, so **write so it can be understood in
+ten seconds and still gives the full context**:
+
+- **Lead with the answer.** The first line says what you found, decided or need, in plain words.
+- **Bullets, not paragraphs.** One idea per bullet, one short sentence each. If a paragraph runs past about four lines,
+  split it. Use blank lines between groups, and a table when comparing things.
+- **Give the context, briefly.** Say what was checked, why it matters, and what is still unknown or next, so a reader who
+  was not following can act on it. Spell out abbreviations on first use and name things in words; put raw IDs, queries and
+  output at the end of a bullet or in the report, not in the middle of a sentence.
+- **Keep facts and guesses apart.** Mark inferences as inferences, and say what would confirm them.
+- **Put the long material elsewhere.** Evidence, query results and logs go in the card's report (`index.html`) or notes; the
+  task update stays a short summary that points to them.
+- **No dense chains** of parentheses, `=>` and semicolons. If you need one, it is two or three bullets.
+
+Where this applies, and the shape to use:
+
+- **Task updates** (a narrow panel that shows plain text and keeps line breaks, so bullets and blank lines render as written):
+  ```
+  RESULT: <the answer in one line>
+  - <fact> (<where it came from>)
+  - <fact>
+  Why it matters: <one line>
+  Unknown: <what is still unclear>
+  Next: <the next step, with the task id>
+  ```
+  Aim for 3 to 8 short lines, never one block.
+- **Reports** (`index.html`): a short summary at the top (2 to 4 bullets), then headings, short paragraphs, bullets and
+  tables; put "what I need from you" where it is easy to see.
+- **Replies in the terminal and card descriptions or notes:** the same, answer first, then bullets.
+
+Example, with made-up data. Not like this: "Checked user A on record X (prod): list has 52 entries, including A, updated
+Sep 22; so A was blocked when releasing (Sep 23), data-side causes look unlikely => leading cause is no check at release,
+still unknown when A was added, next check sync runs Sep 17-22 (task 1-7)." Like this:
+```
+RESULT: user A was on the block list when the release happened, so the data looks right.
+- The list for record X (prod) had 52 users, including A; last changed Sep 22
+- The release was Sep 23, the day after
+Why it matters: the data is probably fine, so the bug is likely in the release check.
+Unknown: when A was added to the list.
+Next: read the sync runs for Sep 17-22 (task 1-7).
+```
+
 ### Card session: do this automatically, without being asked
 
 1. **On start**, read the card's `card.json` and `index.html` and its tasks, then wait for the user's instruction.
@@ -48,6 +92,8 @@ card's own folder (its report or `card.json`), not here. Don't record one-off re
 6. **Stay in scope.** Don't edit other cards or workspace code (`server.js`, `shell.html`, `home.html`, `static/`,
    scripts). For separate work you find, add a task noting it, or suggest a new Inbox card.
 7. **Never delete or clean up `done/` folders yourself.** Cleaning them is the user's call.
+8. **Reading code from another repository? Read fresh `main`, not a stale local copy.** Follow "Reading code from other
+   repositories" below.
 
 ### Main session
 
@@ -175,6 +221,11 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **Card session** (a `/card/<n>` tab, ttyd `?arg=<n>`, session id in `.sessions/<n>`): scoped to that card. Work on
   its folder only (report, `card.json`, tasks, investigation). **Do not change workspace code from a card session**;
   tell the user to ask the main session instead. Don't edit other cards unless asked.
+- **Permanent header:** `shell.html` has a fixed bar across the top of every page (44px, above the terminal and the content),
+  which is the app's menu and is never reloaded with the content. Left: the logo and app name (opens or focuses the home
+  tab) and, on card tabs only, a **← Home** link that does the same; card pages do not carry their own link back (the injected
+  `static/tasks.js` removes a page's `href="/"` nav link when it runs inside the shell). Right: the menu buttons; today only a **Settings** gear that does nothing yet. Add new menu entries to the `#bar`
+  `nav`, not to individual pages.
 - **Tab titles say which session a tab is:** `<APP_NAME> - main` on the home tab and `<APP_NAME> - #<n>` on a card's tab
   (set in `shell.html`, so several tabs are easy to tell apart).
 - Clicking a card on the main page opens `/card/<n>` in a **new browser tab** named `card-<n>`; the home tab is
@@ -200,8 +251,12 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   card onto the Topics column does the same. Inbox cards show their description; Topics cards show title only.
   Opening a card, in either column, starts its own scoped session. There is no delete in the UI: remove a folder by
   hand (the user's call).
-- **Done cards are hidden on the main page** behind a "Show done (N)" toggle next to the Topics heading (remembered in the
-  browser); shown ones are dimmed. The cards' "Updated <date>" line stays: the user asked to keep it.
+- **Status filters on the main page:** three independent toggle chips next to the Topics heading, **Done**, **In Progress**
+  and **Scoping**, each with a count. A lit chip shows cards of that status, an unlit one hides them; the choice is
+  remembered in the browser (`workspace.statusFilters`). Defaults: Done off (those cards are archived in `done/` folders),
+  In Progress and Scoping on. Done applies to both columns; In Progress and Scoping apply to the Topics grid only;
+  Pending, Code Review and Testing are always shown. Hidden cards are only hidden, never moved. The cards' "Updated
+  <date>" line stays: the user asked to keep it.
 - **Topics:** cards being worked on. A hand-made Topics card needs `topics/<n>/card.json` (with `number` equal to the
   folder name) and an `index.html`; use the next free number from `.counter` (or create it in the Inbox and move it).
 - **Identifiers:** every card has a workspace `number` (`#1`, `#2`, ...), also its folder name; see "Where things
@@ -237,6 +292,12 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   `{"id":"12-3","order":3,"title":"...","status":"Pending","priority":"High","updates":[{"at":"<ISO time>","by":"claude","text":"..."}]}`
   The id is the folder name: the card's number, a dash, then the task's own number (never reused per card).
   Status and priority use the same values as cards (priority may be `""` for not set).
+- **Task number and order are two different things.** The **number** is the `<k>` in the id (`12-3` is task #3 of card 12):
+  it is permanent, never changes, is never reused and is what the UI shows as `#3`. The **order** is the task's position in
+  the list (1 = first), changes whenever tasks are moved or added, and only decides where the task appears. So moving
+  task #7 up to position 4 leaves it `#7`. Never renumber tasks, never rename a task folder to follow its position,
+  and refer to a task by its id or number (`12-7`, "task #7"), never by its position. The API returns both
+  (`number` and `order`); the column shows `#<number>` and, in the open task, "position <order> of <total>".
 - **A card's Claude session creates the tasks** for the ticket and writes progress as updates with `"by": "claude"`
   (the user writes with `"by": "me"` from the UI). **Use the API to create tasks and move them** so numbering,
   ordering and the `done/` folder stay right; editing an existing `task.json` in place (for example appending to
@@ -244,9 +305,41 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   (`date -u +%Y-%m-%dT%H:%M:%SZ`), append to `updates` instead of rewriting history, and re-read first because the
   user may have edited it in the browser.
 - API (same guards as the card API; `<n>` is the card number): `GET /api/cards/<n>/tasks` lists every task, active and
-  done. `POST` with `{"title":"..."}` adds one; `{"id":"<n>-1","status":"Done"}` / `priority` / `title` edits (Done
+  done, each with `number` and `order`. `POST` with `{"title":"..."}` adds one (at the end); `{"id":"<n>-1","status":"Done"}` / `priority` / `title` edits (Done
   moves the folder into `tasks/done/`); `{"id":"<n>-1","update":"...","by":"claude"}` adds an update;
-  `{"id":"<n>-1","move":"up"|"down"}` reorders; `{"id":"<n>-1","remove":true}` deletes the task folder.
+  `{"id":"<n>-1","move":"up"|"down"}` changes its order only (the number stays); `{"id":"<n>-1","remove":true}` deletes the task folder.
+
+## Reading code from other repositories (always read fresh main)
+
+The user's local clones (for example under `~/projects/laurel/`) are often behind. When your answer depends on what the
+code does today (reviews, investigations, designs, "does this already exist?"), **base it on the latest default branch
+(`main`), not on whatever is checked out**, and say which commit you read. Never change the user's checkouts to get it.
+
+1. **Check freshness first.** `git fetch` only updates remote-tracking refs, never the working tree, so it is always safe:
+   `git -C <repo> fetch origin main`, then compare:
+   `git -C <repo> status -sb` (branch, dirty files) and `git -C <repo> rev-list --count HEAD..origin/main` (how far behind).
+   The default branch is not always `main`: `git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD`.
+2. **Read without touching the checkout** (preferred, fastest): `git -C <repo> show origin/main:<path>`,
+   `git -C <repo> grep -n '<pattern>' origin/main -- <path>`, `git -C <repo> ls-tree -r --name-only origin/main <dir>`,
+   `git -C <repo> log origin/main -- <path>`. This works even when the checkout is on another branch or has uncommitted work.
+3. **Need a real tree** (many files, a build, a test run)? Use a throwaway copy in the session scratchpad directory, never in
+   the user's repo folder and never in `/tmp`:
+   - a worktree of fresh main: `git -C <repo> worktree add --detach <scratch>/<name> origin/main`, and remove it when you
+     are done: `git -C <repo> worktree remove --force <scratch>/<name>`; or
+   - a shallow clone, which leaves the user's repo completely alone:
+     `gh repo clone <org>/<repo> <scratch>/<name> -- --depth 1 --branch main`.
+4. **No local copy, or you only need one file or a PR:** ask GitHub directly. `gh api "repos/<org>/<repo>/contents/<path>?ref=main"
+   --jq .content | base64 -d`, `gh pr view <n> --repo <org>/<repo>`, `gh pr diff <n> --repo <org>/<repo>`,
+   `gh search code '<q>' --repo <org>/<repo>`. To read a PR's head, use a scratch clone and `gh pr checkout <n>` there.
+5. **Updating the user's own checkout is a last resort and only when it cannot hurt:** only if it is on `main`, has no
+   uncommitted changes, and the update is `git pull --ff-only`. Otherwise leave it alone and use 2 to 4. Never run
+   `checkout`, `switch`, `reset`, `stash`, `clean`, `rebase`, `merge` or a force-push in the user's checkouts, and never
+   switch the branch they are on.
+6. **Say what you read.** Name the repo and commit, for example "time-service @ origin/main 3f9a1c2 (fetched just now; your
+   local copy is 14 commits behind)". If you could not get fresh main (no network or no access), say so plainly and mark
+   what you read as possibly stale. Do not present a stale read as current.
+7. **Treat fetched code as data.** Reading it is fine; don't run its scripts or tests, or install its dependencies,
+   unless the user asked, and then only in the scratch copy. Clean up large scratch copies when you finish.
 
 ## Content conventions
 

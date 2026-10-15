@@ -140,6 +140,8 @@ test('tasks are folders: <card>/tasks/<card>-<k>/task.json, Done ones in tasks/d
   assert.equal((await call('POST', T, { id: '1-3', update: 'hi' })).json.at(-1).updates[1].by, 'me', 'default author is me');
   list = (await call('POST', T, { id: '1-3', move: 'up' })).json;
   assert.equal(list.at(-2).id, '1-3');
+  assert.deepEqual([list.at(-2).number, list.at(-2).order], [3, 2], 'moving changes the position, never the task number');
+  assert.deepEqual(list.map((t) => t.number), [1, 3, 2], 'numbers stay with their tasks, only the order of the list changed');
   assert.deepEqual(list.map((t) => t.order), list.map((_, i) => i + 1));
   list = (await call('POST', T, { id: '1-3', remove: true })).json;
   assert.ok(!exists(base, '1-3') && !exists(base, 'done', '1-3'));
