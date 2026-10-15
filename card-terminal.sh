@@ -7,8 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
-DATA="${DATA_DIR:-.}"
+DATA="${DATA_DIR:-}"
 DATA="${DATA/#\~/$HOME}"
+# Same rule as server.js: ./data by default; the old layout (cards/ in the repo folder) until it is migrated.
+if [ -z "$DATA" ]; then
+  if [ -d data ]; then DATA=data; elif [ -d cards ]; then DATA=.; else DATA=data; fi
+fi
 CLAUDE="${CLAUDE_BIN:-claude}"
 ID="${1:-}"
 if [[ ! "$ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { [ "$ID" != "main" ] && [ ! -f "$DATA/cards/$ID/card.json" ]; }; then
@@ -17,8 +21,8 @@ fi
 mkdir -p "$DATA/.sessions"
 DATA_ABS="$(cd "$DATA" && pwd)"
 ADD=()
-# Private data may live outside this folder (DATA_DIR): let Claude read and write it without permission prompts.
-[ "$DATA_ABS" != "$(pwd)" ] && ADD=(--add-dir "$DATA_ABS")
+# Only when DATA_DIR points outside this folder: let Claude read and write it without permission prompts.
+case "$DATA_ABS/" in "$(pwd)/"*) ;; *) ADD=(--add-dir "$DATA_ABS") ;; esac
 FILE="$DATA/.sessions/$ID"
 if [ -s "$FILE" ]; then
   exec "$CLAUDE" ${ADD[@]+"${ADD[@]}"} --resume "$(head -n1 "$FILE")"

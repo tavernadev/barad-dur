@@ -9,3 +9,6 @@ node_modules/
 /.sessions/
 /.counter
 /data/
+
+# local helper scripts (one-off tooling), not part of the repo
+/scripts/

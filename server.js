@@ -19,7 +19,12 @@ const os = require('os');
 
 const ROOT = __dirname;
 try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* no .env: defaults and the real environment apply */ }
-const DATA = path.resolve(ROOT, (process.env.DATA_DIR || '.').replace(/^~(?=$|[\\/])/, os.homedir())); // private data: cards/, .sessions/, .counter
+// Private data (cards/, .sessions/, .counter) lives in ./data, which is gitignored. DATA_DIR overrides it (~ is expanded).
+// Until an old install is moved over by hand, data still sitting in the repo folder keeps being used.
+const DATA = process.env.DATA_DIR ? path.resolve(ROOT, process.env.DATA_DIR.replace(/^~(?=$|[\\/])/, os.homedir()))
+  : fs.existsSync(path.join(ROOT, 'data')) ? path.join(ROOT, 'data')
+  : fs.existsSync(path.join(ROOT, 'cards')) ? ROOT
+  : path.join(ROOT, 'data');
 const CARDS = path.join(DATA, 'cards');
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -30,9 +35,10 @@ const CONFIG = {
   linearBaseUrl: process.env.LINEAR_BASE_URL || '', // e.g. https://linear.app/<workspace>/issue/ ; empty = tickets are not links
 };
 
-// Data was moved out with DATA_DIR but old data is still in the repo folder: say so instead of silently starting empty.
+// Old layout still in use: say how to move it. Or DATA_DIR points elsewhere while old data remains here: say so too.
+if (DATA === ROOT) console.warn('Private data is still in the repo folder. Stop the app and move cards/, .sessions/ and .counter into ./data (gitignored).');
 if (DATA !== ROOT && fs.existsSync(path.join(ROOT, 'cards')) && !fs.existsSync(path.join(DATA, 'cards'))) {
-  console.warn(`DATA_DIR is ${DATA} but cards/ still exists in ${ROOT}. Stop the app and run scripts/migrate-data.sh to move it.`);
+  console.warn(`DATA_DIR is ${DATA} but cards/ still exists in ${ROOT}. Stop the app and move cards/, .sessions/ and .counter there.`);
 }
 
 // First run on a fresh clone: create the data folder and seed one example card so the UI is not empty.

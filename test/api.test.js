@@ -11,13 +11,15 @@ const { EventEmitter } = require('events');
 const REPO = path.join(__dirname, '..');
 
 // Build a throwaway "repo" (with the real examples/ and static/) and an external data folder, then load the server.
-function boot({ dataInRepo = true } = {}) {
+function boot({ dataInRepo = true, legacy = false, dataDir } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-root-'));
   fs.cpSync(path.join(REPO, 'examples'), path.join(root, 'examples'), { recursive: true });
   fs.cpSync(path.join(REPO, 'static'), path.join(root, 'static'), { recursive: true });
   for (const f of ['home.html', 'shell.html']) fs.copyFileSync(path.join(REPO, f), path.join(root, f));
-  const data = dataInRepo ? root : fs.mkdtempSync(path.join(os.tmpdir(), 'barad-data-'));
-  const env = { ...process.env, DATA_DIR: dataInRepo ? '' : data };
+  // legacy: an old install with cards/ still in the repo folder (not migrated yet)
+  if (legacy) fs.cpSync(path.join(REPO, 'examples', 'cards'), path.join(root, 'cards'), { recursive: true });
+  const data = dataInRepo ? (legacy ? root : path.join(root, 'data')) : fs.mkdtempSync(path.join(os.tmpdir(), 'barad-data-'));
+  const env = { ...process.env, DATA_DIR: dataDir !== undefined ? dataDir : dataInRepo ? '' : data };
   let handler;
   const fakeHttp = { createServer: (h) => { handler = h; return { listen() {} }; } };
   const fakeFs = { ...fs, watch: () => ({}) };
@@ -47,11 +49,44 @@ test('first run seeds the example card and numbers it', async () => {
   assert.equal(json[0].number, 1);
 });
 
+test('private data defaults to ./data (gitignored), not the repo root', async () => {
+  const { call, root, data } = boot();
+  await call('POST', '/api/cards', { title: 'Mine' });
+  assert.equal(data, path.join(root, 'data'));
+  assert.ok(fs.readdirSync(path.join(data, 'cards')).some((d) => d.endsWith('mine')));
+  assert.ok(!fs.existsSync(path.join(root, 'cards')), 'no cards/ folder next to the code');
+  assert.match(fs.readFileSync(path.join(REPO, '.gitignore'), 'utf8'), /^\/data\/$/m);
+});
+
+test('an old install (cards/ in the repo folder) keeps working until migrated', async () => {
+  const { call, root } = boot({ legacy: true });
+  assert.equal((await call('GET', '/api/cards')).json.length, 1);
+  await call('POST', '/api/cards', { title: 'Old layout' });
+  assert.ok(fs.existsSync(path.join(root, 'cards')) && !fs.existsSync(path.join(root, 'data')));
+});
+
+test('DATA_DIR accepts a folder inside the repo (relative) or a full path, with ~ expanded', async () => {
+  const rel = boot({ dataDir: 'my-private-data' });
+  await rel.call('POST', '/api/cards', { title: 'Rel' });
+  assert.ok(fs.existsSync(path.join(rel.root, 'my-private-data', 'cards')), 'relative paths resolve from the repo folder');
+
+  const name = '.barad-dur-test-' + process.pid;
+  const home = path.join(os.homedir(), name);
+  try {
+    const tilde = boot({ dataDir: '~/' + name });
+    await tilde.call('POST', '/api/cards', { title: 'Tilde' });
+    assert.ok(fs.existsSync(path.join(home, 'cards')), '~ expands to the home folder');
+    assert.ok(!fs.existsSync(path.join(tilde.root, '~')), 'no literal ~ folder is created');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('DATA_DIR keeps cards outside the repo folder', async () => {
   const { call, root, data } = boot({ dataInRepo: false });
   await call('POST', '/api/cards', { title: 'Outside' });
   assert.ok(fs.readdirSync(path.join(data, 'cards')).some((d) => d.endsWith('outside')));
-  assert.ok(!fs.existsSync(path.join(root, 'cards')), 'nothing is written into the repo folder');
+  assert.ok(!fs.existsSync(path.join(root, 'cards')) && !fs.existsSync(path.join(root, 'data')), 'nothing is written into the repo folder');
 });
 
 test('inbox cards: create, number, validate', async () => {

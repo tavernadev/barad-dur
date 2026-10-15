@@ -56,10 +56,12 @@ than rewriting history, and use a real UTC time for `at` (`date -u +%Y-%m-%dT%H:
 
 ## Configuration and privacy (repo hygiene)
 
-- **Where the data lives:** `cards/`, `.sessions/` and `.counter` are under `DATA_DIR` (default: this folder).
-  Every `cards/<id>/` path in these docs means `<DATA_DIR>/cards/<id>/`. Card sessions are told their absolute
-  card folder in their first prompt and are launched with `--add-dir <DATA_DIR>`, so use that path, not a
-  relative one, when `DATA_DIR` is elsewhere.
+- **Where the data lives:** `cards/`, `.sessions/` and `.counter` are in the data folder, `./data` by default
+  (gitignored). `DATA_DIR` overrides it: a folder inside the repo (relative to the repo folder, not the shell's
+  directory) or a full path (`/home/you/...` or `~/...`). Until an old install is migrated
+  by hand, data still in the repo folder keeps being used. Every `cards/<id>/` path in these
+  docs means `<data folder>/cards/<id>/`. Card sessions are told their absolute card folder in their first prompt
+  and get `--add-dir` when the data is outside the repo folder, so use that absolute path, not a relative one.
 
 - **Settings are environment variables**, never hardcoded: `APP_NAME`, `HOST`, `PORT`, `TTYD_PORT`,
   `TTYD_INTERFACE`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
@@ -70,6 +72,8 @@ than rewriting history, and use a real UTC time for `at` (`date -u +%Y-%m-%dT%H:
   must stay that way. Never `git add -f` them, never copy card content, customer names, or ticket text into
   committed files (code, `CLAUDE.md`, README, `examples/`). Examples use fake data and the generic ticket key
   `ABC-123`. Secrets never go in `example.env` or any committed file.
+- **`scripts/` is never committed** (it is gitignored: local one-off helpers). Don't reference a script from there in
+  committed docs or code; describe the manual step instead.
 - Org rule: no real ticket or incident IDs in committed code or docs.
 - Committing or pushing is something the user asks for; don't do it on your own.
 
@@ -106,17 +110,18 @@ server.js            dependency-free Node server (routes, SSE live reload, card 
 shell.html           split view: terminal iframe | content iframe, URL drives the content pane
 home.html            Topics grid + Inbox column at / (shown next to the main terminal)
 static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected),
-                     favicon.png (tab icon, 128x128) and barad-dur.png (the official project image, 512x512, used as the
+                     favicon.png (tab icon, 128x128, the "Molten golden all-seeing eye") and barad-dur.png (the official project image, 512x512, used as the
                      README logo); both are the user's own generated "Fiery Eye of Sauron" art, transparent background
-.counter             last card number handed out (server-managed, never reused)
-cards/<id>/
-  card.json          title, summary, status, priority, tags, updated
-  index.html         the report, served at /card/<id>
-  tasks.json         the card's tasks (TODO column), written by its Claude session and by the user
-.sessions/<id>       Claude session id for that card (one session per card)
+data/                private data, gitignored (or wherever DATA_DIR points); the three items below live in it
+  .counter           last card number handed out (server-managed, never reused)
+  cards/<id>/
+    card.json        title, summary, status, priority, tags, updated
+    index.html       the report, served at /card/<id>
+    tasks.json       the card's tasks (TODO column), written by its Claude session and by the user
+  .sessions/<id>     Claude session id for that card (one session per card)
 examples/cards/      sample card seeded on first run (so a fresh clone is not empty)
 start.sh, terminal.sh, card-terminal.sh
-scripts/migrate-data.sh  moves cards/, .sessions/, .counter into DATA_DIR (run with the app stopped)
+scripts/             local helper scripts, gitignored and not in the repo (e.g. a one-off data migration); never commit this folder
 test/api.test.js     API tests in a no-port harness (`npm test`); .github/workflows/test.yml runs them in CI
 example.env          every setting with its default (committed); .env is the local copy (gitignored)
 README.md, .gitignore, package.json
