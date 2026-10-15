@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barad-dûr</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/favicon.png">
+<style>
+  :root { --bg:#0d1117; --line:#3d444d; --accent:#4493f8; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; background:var(--bg); overflow:hidden; }
+  #split { display:flex; height:100%; width:100%; }
+  #left  { flex:0 0 var(--left, 50%); min-width:200px; }
+  #right { flex:1 1 0; min-width:200px; }
+  iframe { width:100%; height:100%; border:0; display:block; background:var(--bg); }
+  #gutter { flex:0 0 8px; cursor:col-resize; background:var(--line); transition:background .15s; touch-action:none; }
+  #gutter:hover, body.dragging #gutter { background:var(--accent); }
+  /* While dragging, stop iframes from swallowing mouse events */
+  body.dragging iframe { pointer-events:none; }
+  body.dragging { cursor:col-resize; user-select:none; }
+</style>
+</head>
+<body>
+<div id="split">
+  <div id="left"><iframe id="term" title="Terminal"></iframe></div>
+  <div id="gutter" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
+  <div id="right"><iframe id="content" title="Content"></iframe></div>
+</div>
+<script>
+  // One Claude session per tab: the home tab runs the "main" workspace session (display/UI changes),
+  // each /card/<id> tab runs a session scoped to that ticket (ttyd runs card-terminal.sh <id>).
+  // The terminal iframe is set once and never reloaded or re-navigated by this page.
+  const cardId = (p) => (p.match(/^\/card\/([^/]+)\/?$/) || [])[1];
+  const sessionFor = (p) => cardId(p) || 'main';
+  const term = document.getElementById('term');
+  let termId = null;
+  // Settings from the server (example.env): app name and the terminal's port.
+  let cfg = { ttydPort: 7681 };
+  const ready = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; if (c.appName) document.title = c.appName; }).catch(() => {});
+  window.name = sessionFor(location.pathname) === 'main' ? 'home' : 'card-' + sessionFor(location.pathname);
+  const layout = (p) => {
+    const id = sessionFor(p);
+    if (termId && termId !== id) { location.replace(p); return false; } // this tab's terminal belongs to another session
+    if (!termId) { termId = id; ready.then(() => { term.src = 'http://' + location.hostname + ':' + cfg.ttydPort + '/?arg=' + encodeURIComponent(id); }); }
+    return true;
+  };
+
+  // Right pane: the URL (/ or /card/<id>) decides what the content iframe shows.
+  const content = document.getElementById('content');
+  const srcFor = (p) => { const id = cardId(p); return id ? '/content/' + id + '/' : '/content/home'; };
+  const show = (p) => {
+    if (!layout(p)) return;
+    const src = srcFor(p);
+    if (content.contentWindow && content.getAttribute('src')) content.contentWindow.location.replace(src);
+    else content.src = src;
+    content.setAttribute('src', src);
+  };
+  window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin || e.source !== content.contentWindow) return;
+    const path = e.data && e.data.type === 'navigate' && e.data.path;
+    if (typeof path !== 'string' || !/^\/(card\/[^/]+\/?)?$/.test(path)) return;
+    // Cards and home each own a terminal, so they live in their own named browser tabs
+    // (named per session, so clicking again focuses the existing tab instead of starting a second session).
+    if (sessionFor(path) !== termId) openTab(path, sessionFor(path) === 'main' ? 'home' : 'card-' + sessionFor(path));
+  });
+
+  // Focus the named tab if it already exists, WITHOUT navigating it (navigating would reload its shell,
+  // restart its terminal and trigger the "Leave site?" prompt). Only a brand-new blank tab gets the URL.
+  function openTab(path, name) {
+    const w = window.open('', name);
+    if (!w) return;
+    let fresh = false;
+    try { fresh = w.location.href === 'about:blank'; } catch (_) { /* cross-origin: leave it alone */ }
+    if (fresh) w.location.href = path;
+    w.focus();
+  }
+  window.addEventListener('popstate', () => show(location.pathname));
+  show(location.pathname);
+
+  const KEY = 'workspace.leftWidthPct';
+  const split = document.getElementById('split');
+  const gutter = document.getElementById('gutter');
+  const clamp = (v) => Math.min(80, Math.max(15, v));
+  const apply = (pct) => document.documentElement.style.setProperty('--left', pct + '%');
+
+  apply(clamp(parseFloat(localStorage.getItem(KEY)) || 50));
+
+  let dragging = false;
+  gutter.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    gutter.setPointerCapture(e.pointerId);
+    document.body.classList.add('dragging');
+  });
+  gutter.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = split.getBoundingClientRect();
+    apply(clamp(((e.clientX - rect.left) / rect.width) * 100));
+  });
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('dragging');
+    localStorage.setItem(KEY, parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--left')));
+  };
+  gutter.addEventListener('pointerup', stop);
+  gutter.addEventListener('pointercancel', stop);
+  gutter.addEventListener('dblclick', () => { apply(50); localStorage.setItem(KEY, 50); });
+</script>
+</body>
+</html>

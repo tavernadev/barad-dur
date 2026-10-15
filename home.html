@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cards</title>
+<style>
+  :root { --bg:#fff; --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --card:#f6f8fa; --accent:#0969da; --bad:#cf222e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --card:#151b23; --accent:#4493f8; --bad:#f85149; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  .wrap { max-width:1300px; margin:0 auto; padding:32px 20px 80px; }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:28px; align-items:start; }
+  @media (max-width:760px) { .layout { grid-template-columns:1fr; } }
+  h1 { font-size:26px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 24px; font-size:14px; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:16px; }
+  .card { display:flex; flex-direction:column; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; transition:border-color .15s, transform .15s; }
+  .card:hover { border-color:var(--accent); transform:translateY(-2px); }
+  .card .main { display:flex; flex-direction:column; gap:8px; flex:1; color:inherit; text-decoration:none; }
+  select, button, input, textarea { font:inherit; color:var(--fg); }
+  .card select { font-size:13px; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:2px 6px; cursor:pointer; }
+  select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px solid var(--accent); }
+  /* Status / priority colors: --c is the hue, tinted background keeps it readable in light and dark */
+  select[data-field] { --c:#8b949e; background:color-mix(in srgb, var(--c) 16%, var(--bg)); color:color-mix(in srgb, var(--c) 70%, var(--fg)); border-color:color-mix(in srgb, var(--c) 55%, var(--line)); font-weight:600; }
+  select[data-value="Pending"]     { --c:#8b949e; }
+  select[data-value="Scoping"]     { --c:#a371f7; }
+  select[data-value="In Progress"] { --c:#4493f8; }
+  select[data-value="Code Review"] { --c:#d29922; }
+  select[data-value="Testing"]     { --c:#f0883e; }
+  select[data-value="Done"]        { --c:#3fb950; }
+  select[data-value="Low"]         { --c:#3fb950; }
+  select[data-value="Medium"]      { --c:#d29922; }
+  select[data-value="High"]        { --c:#f0883e; }
+  select[data-value="Urgent"]      { --c:#f85149; }
+  .id, .num { font-size:12px; font-weight:600; color:var(--accent); letter-spacing:.04em; }
+  .tk { font:inherit; font-size:12px; border:1px dashed var(--line); background:none; color:var(--muted); border-radius:999px; padding:1px 9px; cursor:pointer; }
+  .tk:hover { border-color:var(--accent); color:var(--accent); }
+  .ticket { font-size:12px; font-weight:600; color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:1px 9px; text-decoration:none; }
+  a.ticket:hover { background:color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+  .title { font-size:17px; font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; color:var(--muted); }
+  .tag { border:1px solid var(--line); border-radius:999px; padding:1px 9px; }
+  .empty { color:var(--muted); padding:16px 0; font-size:14px; }
+
+  /* Inbox column */
+  aside { position:sticky; top:16px; }
+  .add { width:32px; height:32px; border-radius:8px; border:1px solid var(--line); background:var(--card); font-size:20px; line-height:1; cursor:pointer; }
+  .add:hover { border-color:var(--accent); color:var(--accent); }
+  #form { display:none; flex-direction:column; gap:8px; background:var(--card); border:1px solid var(--accent); border-radius:10px; padding:12px; margin:12px 0; }
+  #form.open { display:flex; }
+  #form input, #form textarea { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; resize:vertical; }
+  #form textarea { min-height:90px; }
+  #form .actions { display:flex; gap:8px; justify-content:flex-end; }
+  #form button { border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:4px 12px; cursor:pointer; }
+  #form button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  #form button:disabled { opacity:.6; cursor:default; }
+  .inbox { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
+  .item { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:6px; transition:border-color .15s; }
+  .item:hover { border-color:var(--accent); }
+  .item a { color:inherit; text-decoration:none; display:flex; flex-direction:column; gap:4px; }
+  .item .t { font-weight:600; }
+  .item .d { color:var(--muted); font-size:14px; white-space:pre-wrap; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  .item .move { align-self:flex-start; font-size:12px; border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:2px 8px; cursor:pointer; }
+  .item .move:hover { border-color:var(--accent); color:var(--accent); }
+  .item[draggable="true"] { cursor:grab; }
+  .item.dragging { opacity:.5; }
+  main { min-height:60vh; border-radius:10px; }
+  main.drop-over { outline:2px dashed var(--accent); outline-offset:6px; background:color-mix(in srgb, var(--accent) 6%, transparent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="layout">
+    <main>
+      <h1>Topics</h1>
+      <p class="sub">Tickets and topics you are working on. Each card is a folder under <code>cards/&lt;id&gt;/</code>.</p>
+      <div class="grid" id="grid"></div>
+    </main>
+
+    <aside>
+      <div class="head">
+        <h1>Inbox</h1>
+        <button class="add" id="add" title="Add to inbox" aria-label="Add to inbox">+</button>
+      </div>
+      <p class="sub">Things to pick up later.</p>
+      <form id="form" autocomplete="off">
+        <input id="f-title" name="title" placeholder="Title" maxlength="200" required>
+        <textarea id="f-desc" name="description" placeholder="Description" maxlength="4000"></textarea>
+        <div class="actions">
+          <button type="button" id="cancel">Cancel</button>
+          <button type="submit" class="primary" id="save">Add</button>
+        </div>
+      </form>
+      <div class="inbox" id="inbox"></div>
+    </aside>
+  </div>
+</div>
+<script>
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+  const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
+  // Workspace number (#1, #2, ...) is ours; the Linear ticket key is optional and can be added later.
+  let CFG = {}; // from /api/config (LINEAR_BASE_URL in .env); without it a ticket key is shown but not linked
+  const loadConfig = () => fetch('/api/config').then((r) => r.json()).then((c) => { CFG = c; }).catch(() => {});
+  const ticketHtml = (c) => c.ticket
+    ? (CFG.linearBaseUrl
+      ? `<a class="ticket" href="${esc(CFG.linearBaseUrl)}${encodeURIComponent(c.ticket)}" title="Open in Linear">${esc(c.ticket)}</a>`
+      : `<span class="ticket">${esc(c.ticket)}</span>`)
+    : '<button class="tk" type="button" data-ticket-edit>+ Linear ticket</button>';
+  const wireTickets = (root, cards) => root.querySelectorAll('[data-ticket-edit]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.closest('[data-id]').dataset.id, card = cards.find((c) => c.id === id);
+      const v = prompt('Linear ticket key (e.g. ABC-123). Leave empty to remove.', card.ticket || '');
+      if (v === null) return;
+      post('/api/cards/' + encodeURIComponent(id), { ticket: v }).catch(() => alert('Not a valid ticket key (expected something like ABC-123)'));
+    });
+  });
+  const byNumber = (a, b) => (a.number || 1e9) - (b.number || 1e9);
+
+  // ---- Inbox form
+  const form = document.getElementById('form');
+  const open = () => { form.classList.add('open'); document.getElementById('f-title').focus(); };
+  const close = () => { form.classList.remove('open'); form.reset(); };
+  document.getElementById('add').addEventListener('click', () => (form.classList.contains('open') ? close() : open()));
+  document.getElementById('cancel').addEventListener('click', close);
+  form.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const save = document.getElementById('save');
+    save.disabled = true;
+    post('/api/cards', { title: document.getElementById('f-title').value, description: document.getElementById('f-desc').value })
+      .then(close) // the server's file watcher reloads this page, so the new item shows up
+      .catch(() => alert('Could not add the card'))
+      .finally(() => { save.disabled = false; });
+  });
+
+  loadConfig().then(() => fetch('/api/cards')).then((r) => r.json()).then((cards) => {
+    const topics = cards.filter((c) => !c.inbox).sort(byNumber);
+    const inbox = cards.filter((c) => c.inbox).sort(byNumber);
+
+    // ---- Inbox list
+    const inboxEl = document.getElementById('inbox');
+    inboxEl.innerHTML = inbox.length ? inbox.map((c) => `
+      <article class="item" data-id="${esc(c.id)}">
+        <a href="/card/${encodeURIComponent(c.id)}">
+          <span class="num">#${esc(c.number ?? '?')}</span>
+          <span class="t">${esc(c.title)}</span>
+          ${c.description ? `<span class="d">${esc(c.description)}</span>` : ''}
+        </a>
+        <span class="row"><button class="move" type="button" title="Move to Topics">Move to Topics &rarr;</button>${ticketHtml(c)}</span>
+      </article>`).join('') : '<div class="empty">Inbox is empty.</div>';
+    inboxEl.querySelectorAll('.item .move').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        btn.disabled = true;
+        post('/api/cards/' + encodeURIComponent(btn.closest('.item').dataset.id), { inbox: false })
+          .catch(() => { alert('Could not move the card'); btn.disabled = false; });
+      });
+    });
+
+    wireTickets(inboxEl, inbox);
+
+    // ---- Drag an Inbox card onto Topics (the "Move to Topics" button stays as the keyboard fallback)
+    const mainEl = document.querySelector('main');
+    let draggingId = null;
+    inboxEl.querySelectorAll('.item').forEach((el) => {
+      el.draggable = true;
+      el.querySelectorAll('a').forEach((a) => { a.draggable = false; }); // drag the card, not the link
+      el.addEventListener('dragstart', (e) => {
+        draggingId = el.dataset.id;
+        e.dataTransfer.setData('text/plain', draggingId);
+        e.dataTransfer.effectAllowed = 'move';
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', () => { draggingId = null; el.classList.remove('dragging'); mainEl.classList.remove('drop-over'); });
+    });
+    mainEl.addEventListener('dragover', (e) => {
+      if (!draggingId) return; // ignore drags that did not start on an Inbox card
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      mainEl.classList.add('drop-over');
+    });
+    mainEl.addEventListener('dragleave', (e) => { if (!mainEl.contains(e.relatedTarget)) mainEl.classList.remove('drop-over'); });
+    mainEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      mainEl.classList.remove('drop-over');
+      const id = draggingId;
+      if (!id || !inbox.some((c) => c.id === id)) return;
+      post('/api/cards/' + encodeURIComponent(id), { inbox: false }) // the file watcher reloads the page, same as the button
+        .catch(() => alert('Could not move the card'));
+    });
+
+    // ---- Topics grid (title only)
+    const grid = document.getElementById('grid');
+    if (!topics.length) { grid.innerHTML = '<div class="empty">No topics yet.</div>'; return; }
+    grid.innerHTML = topics.map((c) => `
+      <article class="card" data-id="${esc(c.id)}">
+        <a class="main" href="/card/${encodeURIComponent(c.id)}">
+          <span class="id">#${esc(c.number ?? '?')}</span>
+          <span class="title">${esc(c.title)}</span>
+        </a>
+        <span class="row">
+          <select data-field="status" aria-label="Status"></select>
+          <select data-field="priority" aria-label="Priority"></select>
+        </span>
+        <span class="row">${ticketHtml(c)}</span>
+        <span class="row">${(c.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+        ${c.updated ? `<span class="row">Updated ${esc(c.updated)}</span>` : ''}
+      </article>`).join('');
+
+    wireTickets(grid, topics);
+
+    fetch('/api/options').then((r) => r.json()).then((options) => {
+      grid.querySelectorAll('article.card').forEach((el) => {
+        const card = topics.find((c) => c.id === el.dataset.id);
+        el.querySelectorAll('select[data-field]').forEach((sel) => {
+          const field = sel.dataset.field, values = options[field] || [];
+          if (!values.includes(card[field])) { const o = new Option('Not set', '', true, true); o.disabled = true; sel.add(o); }
+          values.forEach((v) => sel.add(new Option(v, v)));
+          sel.value = values.includes(card[field]) ? card[field] : '';
+          sel.dataset.value = sel.value;
+          sel.addEventListener('change', () => {
+            sel.dataset.value = sel.value;
+            sel.disabled = true;
+            post('/api/cards/' + encodeURIComponent(card.id), { [field]: sel.value })
+              .catch(() => { alert('Could not save'); location.reload(); })
+              .finally(() => { sel.disabled = false; });
+          });
+        });
+      });
+    });
+  });
+</script>
+</body>
+</html>

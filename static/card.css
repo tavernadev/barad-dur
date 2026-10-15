@@ -1,0 +1,45 @@
+/* Shared styles for generated card pages (Inbox items). Hand-written reports can link this too. */
+:root { --bg:#fff; --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --card:#f6f8fa; --accent:#0969da; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --card:#151b23; --accent:#4493f8; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+.wrap { max-width:860px; margin:0 auto; padding:24px 20px 80px; }
+nav { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); padding:10px 20px; z-index:5; font-size:14px; }
+nav a, a { color:var(--accent); text-decoration:none; }
+nav a:hover { text-decoration:underline; }
+h1 { font-size:28px; margin:24px 0 8px; }
+h2 { font-size:20px; margin:32px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+.muted { color:var(--muted); }
+.desc { white-space:pre-wrap; }
+.meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:16px 0; }
+.meta div { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.meta b { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+select[data-field] { font:inherit; border:1px solid var(--line); border-radius:6px; padding:2px 8px; margin-top:2px; cursor:pointer; }
+select[data-field]:focus-visible { outline:2px solid var(--accent); }
+/* Status / priority colors: --c is the hue, tinted background keeps it readable in light and dark */
+select[data-field] { --c:#8b949e; background:color-mix(in srgb, var(--c) 16%, var(--bg)); color:color-mix(in srgb, var(--c) 70%, var(--fg)); border-color:color-mix(in srgb, var(--c) 55%, var(--line)); font-weight:600; }
+select[data-value="Pending"]     { --c:#8b949e; }
+select[data-value="Scoping"]     { --c:#a371f7; }
+select[data-value="In Progress"] { --c:#4493f8; }
+select[data-value="Code Review"] { --c:#d29922; }
+select[data-value="Testing"]     { --c:#f0883e; }
+select[data-value="Done"]        { --c:#3fb950; }
+select[data-value="Low"]         { --c:#3fb950; }
+select[data-value="Medium"]      { --c:#d29922; }
+select[data-value="High"]        { --c:#f0883e; }
+select[data-value="Urgent"]      { --c:#f85149; }
+
+/* Editable fields (title, description, notes): look like text until hovered or focused, save on blur */
+h1 { display:flex; align-items:baseline; gap:10px; }
+.edit, .edit-title { font:inherit; color:inherit; background:transparent; border:1px solid transparent; border-radius:8px; padding:4px 8px; margin:0 -8px; width:calc(100% + 16px); transition:border-color .15s, background .15s; }
+.edit-title { flex:1; font-size:inherit; font-weight:inherit; min-width:0; margin:0; width:auto; }
+.edit:hover, .edit-title:hover { border-color:var(--line); }
+.edit:focus, .edit-title:focus { outline:none; border-color:var(--accent); background:var(--card); }
+textarea.edit { display:block; resize:vertical; min-height:3.2em; line-height:1.5; }
+textarea.notes { min-height:8em; }
+.edit::placeholder { color:var(--muted); }
+.toast { position:fixed; left:16px; bottom:16px; z-index:40; padding:4px 12px; border-radius:8px; font-size:13px; font-weight:600; color:var(--fg); background:var(--card); border:1px solid var(--line); opacity:0; transform:translateY(6px); transition:opacity .2s, transform .2s; pointer-events:none; }
+.toast.show { opacity:1; transform:none; }
+.toast.bad { border-color:#f85149; color:#f85149; }

@@ -1,0 +1,21 @@
+{
+  "name": "barad-dur",
+  "version": "0.1.0",
+  "description": "Barad-dûr: a local, all-seeing command center for tickets, tasks and per-ticket Claude Code sessions",
+  "scripts": {
+    "start": "./start.sh",
+    "web": "node --watch server.js",
+    "terminal": "./terminal.sh",
+    "test": "node --test"
+  },
+  "type": "commonjs",
+  "private": true,
+  "engines": {
+    "node": ">=20.12"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tavernadev/barad-dur.git"
+  }
+}

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Barad-dûr">
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="28%" r="70%">
+      <stop offset="0" stop-color="#5a1a08"/>
+      <stop offset="1" stop-color="#0c0708"/>
+    </radialGradient>
+    <radialGradient id="eye" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#fff2a8"/>
+      <stop offset=".35" stop-color="#ffae2b"/>
+      <stop offset="1" stop-color="#e2330b"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="128" height="128" fill="url(#sky)"/>
+  <!-- tower: broad base, narrowing shaft, two horns -->
+  <path d="M30 128 L48 78 L44 62 L54 66 L51 38 L60 52 L64 40 L68 52 L77 38 L74 66 L84 62 L80 78 L98 128 Z" fill="#17111a" stroke="#05030a" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M64 128 L64 70" stroke="#2c2230" stroke-width="2"/>
+  <!-- the eye, set between the horns -->
+  <g filter="url(#glow)">
+    <path d="M26 44 Q64 8 102 44 Q64 80 26 44 Z" fill="url(#eye)"/>
+  </g>
+  <ellipse cx="64" cy="44" rx="5" ry="17" fill="#120508"/>
+</svg>

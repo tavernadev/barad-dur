@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Example card</title>
+<link rel="stylesheet" href="/static/card.css">
+</head>
+<body>
+<nav><a href="/">&larr; All cards</a></nav>
+<div class="wrap">
+  <h1>Example card</h1>
+  <div class="meta">
+    <div><b>Status</b><select data-field="status" aria-label="Status"></select></div>
+    <div><b>Priority</b><select data-field="priority" aria-label="Priority"></select></div>
+  </div>
+  <h2>Description</h2>
+  <p class="desc"></p>
+  <h2>Notes</h2>
+  <p class="muted">Working notes for this card go here.</p>
+</div>
+<script src="/static/card.js"></script>
+</body>
+</html>

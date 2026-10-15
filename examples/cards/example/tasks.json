@@ -1,0 +1,18 @@
+[
+  {
+    "id": "t1",
+    "order": 1,
+    "title": "Read the example card",
+    "status": "Done",
+    "priority": "Low",
+    "updates": [{ "at": "2026-01-01T09:00:00Z", "by": "me", "text": "Tasks belong to a card. Click one to open it and write updates." }]
+  },
+  {
+    "id": "t2",
+    "order": 2,
+    "title": "Create your own card from the Inbox",
+    "status": "Pending",
+    "priority": "Medium",
+    "updates": []
+  }
+]
