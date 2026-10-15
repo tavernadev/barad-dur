@@ -12,7 +12,7 @@ const REPO = path.join(__dirname, '..');
 const exists = (...p) => fs.existsSync(path.join(...p));
 
 // Build a throwaway "repo" (with the real examples/ and static/), let `prepare` set up files first, then load the server.
-function boot({ dataDir, prepare } = {}) {
+function boot({ dataDir, prepare, noBirthtime } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-root-'));
   fs.cpSync(path.join(REPO, 'examples'), path.join(root, 'examples'), { recursive: true });
   fs.cpSync(path.join(REPO, 'static'), path.join(root, 'static'), { recursive: true });
@@ -25,7 +25,9 @@ function boot({ dataDir, prepare } = {}) {
   const fakeHttp = { createServer: (h) => { handler = h; return { listen() {} }; } };
   // Like the real fs.watch, refuse a folder that does not exist (a server that watches before creating it must fail here).
   const watchers = [];
-  const fakeFs = { ...fs, watch: (p, ...rest) => { if (!fs.existsSync(p)) throw new Error(`ENOENT: cannot watch ${p}`); watchers.push({ path: p, cb: rest.at(-1) }); return {}; } };
+  // noBirthtime: act like filesystems that do not report creation times (GitHub's Linux runners), so ordering must not rely on them
+  const statSync = noBirthtime ? (p, o) => new Proxy(fs.statSync(p, o), { get: (t, k) => (k === 'birthtimeMs' ? 0 : typeof t[k] === 'function' ? t[k].bind(t) : t[k]) }) : fs.statSync;
+  const fakeFs = { ...fs, statSync, watch: (p, ...rest) => { if (!fs.existsSync(p)) throw new Error(`ENOENT: cannot watch ${p}`); watchers.push({ path: p, cb: rest.at(-1) }); return {}; } };
   const fakeProcess = new Proxy(process, { get: (t, k) => (k === 'env' ? env : k === 'loadEnvFile' ? () => { throw new Error('no .env'); } : t[k]) });
   const logs = [];
   const log = console.log;
@@ -174,13 +176,16 @@ test('an old install is migrated once: cards/<slug> -> inbox|topics/<number>, ta
     w('.sessions/main', 'main-uuid\n');
     w('.counter', '3\n');
   };
-  const { call, data, root, logs } = boot({ prepare });
+  const { call, data, root, logs } = boot({ prepare, noBirthtime: true });
   assert.ok(exists(data, 'topics', '1', 'index.html'), 'the report moved untouched');
   assert.ok(exists(data, 'inbox', '2', 'card.json'));
   assert.ok(exists(data, 'topics', 'done', '3', 'card.json'), 'a Done card lands in done/');
   const cards = (await call('GET', '/api/cards')).json;
   assert.equal(cards.length, 4);
-  assert.equal(cards.find((c) => c.title === 'Same number as Idea').number, 4);
+  // two old cards claimed #2: which one keeps it depends on the filesystem, so assert the outcome, not the order
+  assert.deepEqual(cards.filter((c) => /Idea|Same number/.test(c.title)).map((c) => c.number).sort(), [2, 4]);
+  // with no creation times the tie is broken by folder name: 20261015-clash comes before 20261015-idea and keeps #2
+  assert.deepEqual([cards.find((c) => c.title === 'Same number as Idea').number, cards.find((c) => c.title === 'Idea').number], [2, 4]);
   assert.deepEqual((await call('GET', '/api/cards/1/tasks')).json.map((t) => [t.id, t.title, t.status]), [['1-1', 'first', 'Done'], ['1-2', 'second', 'Pending']]);
   assert.ok(exists(data, 'topics', '1', 'tasks', 'done', '1-1', 'task.json') && !exists(data, 'topics', '1', 'tasks.json'));
   assert.equal(fs.readFileSync(path.join(data, '.sessions', '1'), 'utf8').trim(), 'session-uuid-1', 'sessions follow the card number');

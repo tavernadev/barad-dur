@@ -295,7 +295,7 @@ function moveLegacyCards(bases) {
         let meta = {};
         try { meta = JSON.parse(fs.readFileSync(path.join(old, d.name, 'card.json'), 'utf8')); } catch { /* keep going */ }
         return { name: d.name, meta, born: fs.statSync(path.join(old, d.name)).birthtimeMs };
-      }).sort((a, b) => a.born - b.born);
+      }).sort((a, b) => a.born - b.born || a.name.localeCompare(b.name)); // creation time is not reported on every filesystem: tie-break by name
     const used = new Set(listCards().map((c) => c.number));
     let max = Math.max(readCounter(COUNTER), readCounter(path.join(base, '.counter')), ...used, ...cards.map((c) => Number(c.meta.number) || 0));
     for (const c of cards) { // keep a card's own number when it is free, so "#4" stays "#4"
