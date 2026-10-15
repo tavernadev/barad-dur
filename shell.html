@@ -37,7 +37,10 @@
   let termId = null;
   // Settings from the server (example.env): app name and the terminal's port.
   let cfg = { ttydPort: 7681 };
-  const ready = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; if (c.appName) document.title = c.appName; }).catch(() => {});
+  // Tab title says which session this tab is: "<app name> - main" on the home tab, "<app name> - #<card number>" on a card.
+  const tabTitle = () => (cfg.appName || 'Barad-d\u00fbr') + ' - ' + (sessionFor(location.pathname) === 'main' ? 'main' : '#' + sessionFor(location.pathname));
+  document.title = tabTitle();
+  const ready = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; document.title = tabTitle(); }).catch(() => {});
   window.name = sessionFor(location.pathname) === 'main' ? 'home' : 'card-' + sessionFor(location.pathname);
   const layout = (p) => {
     const id = sessionFor(p);

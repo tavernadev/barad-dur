@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const vm = require('vm');
 const { EventEmitter } = require('events');
+const { spawnSync } = require('child_process');
 
 const REPO = path.join(__dirname, '..');
 const exists = (...p) => fs.existsSync(path.join(...p));
@@ -264,6 +265,54 @@ test('home.html: only a real change reloads the page (a read-triggered fs.watch 
   home.cb('change', 'home.html'); // same mtime again
   await wait(200);
   assert.equal(got.filter((c) => c.startsWith('event: reload')).length, 1, 'and not again');
+});
+
+test('card-terminal.sh: starts a card session, resumes it, and resumes an adopted session from its own directory', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-term-'));
+  const data = path.join(tmp, 'data'), elsewhere = path.join(tmp, 'other-project');
+  fs.mkdirSync(path.join(data, 'topics', '7'), { recursive: true });
+  fs.mkdirSync(path.join(data, 'topics', 'done', '8'), { recursive: true });
+  fs.mkdirSync(elsewhere);
+  fs.writeFileSync(path.join(data, 'topics', '7', 'card.json'), '{}');
+  fs.writeFileSync(path.join(data, 'topics', 'done', '8', 'card.json'), '{}');
+  const fake = path.join(tmp, 'fake-claude'); // prints where and how it was launched; the real claude is never run
+  fs.writeFileSync(fake, '#!/bin/sh\necho "PWD=$(pwd)"\necho "ARGS=$*"\n', { mode: 0o755 });
+  const run = (id) => spawnSync('bash', [path.join(REPO, 'card-terminal.sh'), id], { env: { ...process.env, DATA_DIR: data, CLAUDE_BIN: fake, PORT: '8080' }, encoding: 'utf8' });
+  const real = (p) => fs.realpathSync(p);
+
+  let r = run('7'); // a new card session: --session-id, scoped prompt, the card's own folder, run from the repo
+  assert.match(r.stdout, /ARGS=.*--add-dir .*--session-id [0-9a-f-]{36} This session is dedicated to card 7/);
+  assert.ok(r.stdout.includes(path.join(data, 'topics', '7')), 'the prompt names the card folder');
+  assert.equal(real(r.stdout.match(/PWD=(.*)/)[1]), real(REPO));
+  const id = fs.readFileSync(path.join(data, '.sessions', '7'), 'utf8').trim();
+  r = run('7');
+  assert.match(r.stdout, new RegExp(`--resume ${id}`), 'the stored session is resumed');
+  assert.doesNotMatch(r.stdout, /--session-id/);
+  assert.match(run('8').stdout, /Its folder is .*topics\/done\/8/, 'a done card is found in done/');
+
+  // adopt an existing session started somewhere else: resume it from that directory
+  fs.writeFileSync(path.join(data, '.sessions', '7'), 'aaaaaaaa-0000-4000-8000-000000000000\n');
+  fs.writeFileSync(path.join(data, '.sessions', '7.cwd'), elsewhere + '\n');
+  r = run('7');
+  assert.equal(real(r.stdout.match(/PWD=(.*)/)[1]), real(elsewhere), 'resumed from the directory the session was started in');
+  assert.match(r.stdout, /--resume aaaaaaaa-0000-4000-8000-000000000000/);
+  assert.match(r.stdout, /--add-dir/, 'the data folder is outside that directory, so it is added');
+
+  // the default data folder is relative (./data): it must still work after the script changes directory
+  const repo = path.join(tmp, 'repo');
+  fs.mkdirSync(path.join(repo, 'data', 'topics', '9'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'data', '.sessions'), { recursive: true });
+  for (const f of ['card-terminal.sh', 'load-env.sh']) fs.copyFileSync(path.join(REPO, f), path.join(repo, f));
+  fs.writeFileSync(path.join(repo, 'data', 'topics', '9', 'card.json'), '{}');
+  fs.writeFileSync(path.join(repo, 'data', '.sessions', '9'), 'bbbbbbbb-0000-4000-8000-000000000000\n');
+  fs.writeFileSync(path.join(repo, 'data', '.sessions', '9.cwd'), elsewhere + '\n');
+  const envNoData = { ...process.env, CLAUDE_BIN: fake }; delete envNoData.DATA_DIR;
+  r = spawnSync('bash', [path.join(repo, 'card-terminal.sh'), '9'], { env: envNoData, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /--resume bbbbbbbb-0000-4000-8000-000000000000/);
+  assert.equal(real(r.stdout.match(/PWD=(.*)/)[1]), real(elsewhere));
+
+  for (const bad of ['', '../x', 'abc', '99']) assert.notEqual(spawnSync('bash', ['-c', `timeout 1 true; DATA_DIR=${data} CLAUDE_BIN=${fake} bash ${path.join(REPO, 'card-terminal.sh')} '${bad}' </dev/null & p=$!; sleep 0.3; kill $p 2>/dev/null; wait $p 2>/dev/null; echo done`], { encoding: 'utf8' }).stdout.includes('PWD='), true, `invalid id '${bad}' must not start claude`);
 });
 
 test('config exposes only browser-safe settings', async () => {

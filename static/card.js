@@ -68,6 +68,57 @@
     }
   }
 
+  // ---------- Linear ticket (optional; the main page shows and sets it the same way) ----------
+  var linearBase = '', ticketBox = null;
+  function buildTicket() {
+    var meta = document.querySelector('.meta');
+    if (!meta || ticketBox) return;
+    ticketBox = document.createElement('div');
+    ticketBox.innerHTML = '<b>Ticket</b><span class="tk-slot"></span>';
+    meta.appendChild(ticketBox);
+  }
+  // Inline editor shared by the "+ Linear ticket" chip and the pencil: Enter or leaving the field saves, Escape cancels.
+  // On a card that has a ticket, saving an empty field removes it; on one without, empty just cancels.
+  function editTicket(slot, current) {
+    var input = document.createElement('input');
+    input.className = 'tk-input'; input.placeholder = 'ABC-123'; input.maxLength = 30; input.value = current || '';
+    input.setAttribute('aria-label', 'Linear ticket key');
+    slot.textContent = ''; slot.appendChild(input); input.focus(); input.select();
+    var done = false;
+    var finish = function (commit) {
+      if (done) return; done = true;
+      var v = input.value.trim();
+      slot.textContent = '';
+      if (!commit || v === (current || '')) { renderTicket(card); return; }
+      save({ ticket: v }).then(function (c2) {
+        if (c2) renderTicket(c2); else { say('Not a valid ticket key (like ABC-123)', true); renderTicket(card); }
+      });
+    };
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); });
+    input.addEventListener('blur', function () { finish(true); });
+  }
+  function renderTicket(c) {
+    if (!ticketBox) return;
+    var slot = ticketBox.querySelector('.tk-slot');
+    if (slot.querySelector('input')) return; // being edited: leave it alone
+    slot.textContent = '';
+    if (c.ticket) { // set: the link, and a pencil to change or clear it
+      var el = document.createElement(linearBase ? 'a' : 'span');
+      el.className = 'ticket'; el.textContent = c.ticket;
+      if (linearBase) { el.href = linearBase + encodeURIComponent(c.ticket); el.target = '_blank'; el.rel = 'noopener'; el.title = 'Open in Linear'; }
+      var pencil = document.createElement('button');
+      pencil.type = 'button'; pencil.className = 'tk-edit'; pencil.textContent = '\u270e';
+      pencil.title = 'Change ticket (empty removes it)'; pencil.setAttribute('aria-label', 'Change ticket');
+      pencil.addEventListener('click', function () { editTicket(slot, c.ticket); });
+      slot.appendChild(el); slot.appendChild(pencil);
+      return;
+    }
+    var btn = document.createElement('button'); // not set: the same "+ Linear ticket" chip as the main page
+    btn.type = 'button'; btn.className = 'tk'; btn.textContent = '+ Linear ticket';
+    btn.addEventListener('click', function () { editTicket(slot, ''); });
+    slot.appendChild(btn);
+  }
+
   // ---------- dropdowns ----------
   function buildSelects(options) {
     selects.forEach(function (sel) {
@@ -93,6 +144,7 @@
       last[name] = c[name] || '';
       if (document.activeElement !== el) { el.value = last[name]; grow(el); }
     });
+    renderTicket(c);
     selects.forEach(function (sel) {
       if (document.activeElement === sel) return;
       var v = c[sel.dataset.field];
@@ -107,9 +159,12 @@
     }).catch(function () {});
   }
 
-  Promise.all([fetch('/api/options').then(function (r) { return r.json(); }), fetch('/api/cards').then(function (r) { return r.json(); })])
+  Promise.all([fetch('/api/options').then(function (r) { return r.json(); }), fetch('/api/cards').then(function (r) { return r.json(); }),
+               fetch('/api/config').then(function (r) { return r.json(); }).catch(function () { return {}; })])
     .then(function (res) {
       var c = res[1].filter(function (x) { return x.id === id; })[0] || {};
+      linearBase = res[2].linearBaseUrl || '';
+      buildTicket();
       buildSelects(res[0]);
       buildFields(c);
       apply(c);

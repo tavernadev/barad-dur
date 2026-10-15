@@ -81,6 +81,7 @@ the repo, relative to the repo folder, or a full path like `/home/you/...` or `~
     tasks/done/<n>-<k>/       tasks whose status is Done
     tasks/.counter            last task number handed out for this card (never reused)
   .sessions/<n>               Claude session id of card n (one session per card); .sessions/main for the main session
+  .sessions/<n>.cwd           optional: the directory an adopted session must be resumed from (see "Claude sessions")
   .counter                    last card number handed out (never reused)
 ```
 
@@ -107,7 +108,7 @@ static/              shared assets: card.css/card.js (generated pages), tasks.js
 examples/topics/     sample card (with tasks) seeded into <data>/topics on the first run of a fresh clone
 start.sh, terminal.sh, card-terminal.sh, load-env.sh   launchers; load-env.sh reads .env without overriding the environment
 scripts/             local helper scripts, gitignored and not in the repo; never commit this folder
-test/api.test.js     API, storage and migration tests in a no-port harness (`npm test`); CI runs them
+test/api.test.js     API, storage, migration and launcher tests in a no-port harness with a fake `claude` (`npm test`); CI runs them
 example.env          every setting with its default (committed); .env is the local copy (gitignored)
 docs/social-preview.png   1280x640 banner for GitHub's social preview (set by hand: Settings > General > Social preview)
 README.md, LICENSE, .gitignore, package.json
@@ -174,11 +175,20 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **Card session** (a `/card/<n>` tab, ttyd `?arg=<n>`, session id in `.sessions/<n>`): scoped to that card. Work on
   its folder only (report, `card.json`, tasks, investigation). **Do not change workspace code from a card session**;
   tell the user to ask the main session instead. Don't edit other cards unless asked.
+- **Tab titles say which session a tab is:** `<APP_NAME> - main` on the home tab and `<APP_NAME> - #<n>` on a card's tab
+  (set in `shell.html`, so several tabs are easy to tell apart).
 - Clicking a card on the main page opens `/card/<n>` in a **new browser tab** named `card-<n>`; the home tab is
   named `home`. Clicking again focuses the existing tab instead of starting a second session.
 - ttyd runs `card-terminal.sh <n>`, which validates the id (`main` or the number of an existing card), finds the
   card's folder, then resumes the stored session or starts a new one with `--session-id` and a first prompt that
   names the folder. It adds `--add-dir <data>` only when the data folder is outside the repo.
+- **A card can adopt an existing Claude session** (one started elsewhere, e.g. `claude --resume <id>` from another project):
+  create the card (Inbox, then move it to Topics, or straight into Topics), write the session id into `<data>/.sessions/<n>`
+  and the directory it was started in into `<data>/.sessions/<n>.cwd` before the card's tab is first opened. Claude only
+  finds a session from the directory it started in, so `card-terminal.sh` resumes it from that directory (and adds
+  `--add-dir <data>` if the data folder is not inside it). The session's directory is in its transcript
+  (`~/.claude/projects/<dir>/<id>.jsonl`, field `cwd`). An adopted session keeps its own instructions: it does not get
+  the card prompt, and the card is a bookmark with tasks and notes next to it. Never let two terminals drive one session.
 - Reloading a tab restarts only that tab's `claude --resume` process; the session history is kept.
   Two tabs must not drive the same session at once.
 
@@ -196,9 +206,12 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   folder name) and an `index.html`; use the next free number from `.counter` (or create it in the Inbox and move it).
 - **Identifiers:** every card has a workspace `number` (`#1`, `#2`, ...), also its folder name; see "Where things
   live". The Linear ticket key is optional: `ticket` in `card.json` (e.g. `ABC-123`), set from the "+ Linear ticket"
-  chip or `POST /api/cards/<n>` with `{"ticket":"ABC-123"}` (empty string removes it). Once a ticket is set, the grid
-  shows only its link: there is deliberately no "edit" button next to it, so change it through the API or
-  `card.json`. Never treat the ticket key as the card's unique ID.
+  chip or `POST /api/cards/<n>` with `{"ticket":"ABC-123"}` (empty string removes it). Once a ticket is set, the main-page
+  grid shows only its link: there is deliberately no "edit" button on the grid cards, so change it there through the API or
+  `card.json`. A generated card page has a **Ticket** box next to Status and Priority (`static/card.js`): the link plus a
+  pencil (✎) to change it when set, and the same "+ Linear ticket" chip as the main page when not. Both open an inline
+  input, no popup: Enter or leaving the field saves, Escape cancels, and emptying the field of a set ticket removes it. A
+  ticket set anywhere shows up on the open card page by itself. Never treat the ticket key as the card's unique ID.
 - Allowed values (defined in `server.js`, `OPTIONS`):
   - status: Pending, Scoping, In Progress, Code Review, Testing, Done
   - priority: Low, Medium, High, Urgent (unset is allowed, shown as "Not set")

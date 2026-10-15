@@ -22,10 +22,15 @@ if [ "$ID" != "main" ]; then
 fi
 mkdir -p "$DATA/.sessions"
 DATA_ABS="$(cd "$DATA" && pwd)"
+FILE="$DATA_ABS/.sessions/$ID" # absolute: the script may cd to the session's own directory below
+# A card can adopt an existing Claude session (.sessions/<n> = its id). Claude only finds a session from the directory it
+# was started in, so that directory is kept in .sessions/<n>.cwd and used when it exists.
+RUN_DIR="$(pwd)"
+if [ -s "$FILE.cwd" ] && [ -d "$(head -n1 "$FILE.cwd")" ]; then RUN_DIR="$(cd "$(head -n1 "$FILE.cwd")" && pwd)"; fi
 ADD=()
-# Only when DATA_DIR points outside this folder: let Claude read and write it without permission prompts.
-case "$DATA_ABS/" in "$(pwd)/"*) ;; *) ADD=(--add-dir "$DATA_ABS") ;; esac
-FILE="$DATA/.sessions/$ID"
+# Only when the data folder is outside the directory Claude runs in: let it read and write the data without permission prompts.
+case "$DATA_ABS/" in "$RUN_DIR/"*) ;; *) ADD=(--add-dir "$DATA_ABS") ;; esac
+cd "$RUN_DIR"
 if [ -s "$FILE" ]; then
   exec "$CLAUDE" ${ADD[@]+"${ADD[@]}"} --resume "$(head -n1 "$FILE")"
 fi

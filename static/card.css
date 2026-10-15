@@ -43,3 +43,12 @@ textarea.notes { min-height:8em; }
 .toast { position:fixed; left:16px; bottom:16px; z-index:40; padding:4px 12px; border-radius:8px; font-size:13px; font-weight:600; color:var(--fg); background:var(--card); border:1px solid var(--line); opacity:0; transform:translateY(6px); transition:opacity .2s, transform .2s; pointer-events:none; }
 .toast.show { opacity:1; transform:none; }
 .toast.bad { border-color:#f85149; color:#f85149; }
+
+/* Linear ticket chip, same look as on the main page */
+.tk { font:inherit; font-size:12px; border:1px dashed var(--line); background:none; color:var(--muted); border-radius:999px; padding:1px 9px; cursor:pointer; margin-top:2px; }
+.tk:hover { border-color:var(--accent); color:var(--accent); }
+.ticket { display:inline-block; font-size:12px; font-weight:600; color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:1px 9px; text-decoration:none; margin-top:2px; }
+a.ticket:hover { background:color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+.tk-input { font:inherit; font-size:13px; width:9em; color:var(--fg); background:var(--bg); border:1px solid var(--accent); border-radius:6px; padding:2px 8px; margin-top:2px; }
+.tk-edit { font:inherit; font-size:14px; line-height:1; color:var(--muted); background:none; border:1px solid transparent; border-radius:6px; padding:1px 6px; margin:2px 0 0 4px; cursor:pointer; vertical-align:middle; }
+.tk-edit:hover { color:var(--accent); border-color:var(--line); }
