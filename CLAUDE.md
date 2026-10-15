@@ -106,7 +106,8 @@ server.js            dependency-free Node server (routes, SSE live reload, card 
 shell.html           split view: terminal iframe | content iframe, URL drives the content pane
 home.html            Topics grid + Inbox column at / (shown next to the main terminal)
 static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected),
-                     favicon.svg + favicon.png (tab icon: an original drawing of the tower with the eye, linked from shell.html)
+                     favicon.png (tab icon, 128x128) and barad-dur.png (the official project image, 512x512, used as the
+                     README logo); both are the user's own generated "Fiery Eye of Sauron" art, transparent background
 .counter             last card number handed out (server-managed, never reused)
 cards/<id>/
   card.json          title, summary, status, priority, tags, updated

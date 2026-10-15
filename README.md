@@ -1,3 +1,5 @@
+<p align="center"><img src="static/barad-dur.png" alt="Barad-dûr, the all-seeing eye" width="180"></p>
+
 # Barad-dûr
 
 A local, all-seeing command center. One browser page shows every ticket or topic you are working on as a card,
