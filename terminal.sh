@@ -5,6 +5,6 @@
 # Settings (see example.env): TTYD_PORT, TTYD_INTERFACE.
 set -euo pipefail
 cd "$(dirname "$0")"
-if [ -f .env ]; then set -a; . ./.env; set +a; fi
+. ./load-env.sh   # .env values; real environment variables win
 IFACE="${TTYD_INTERFACE:-$([ "$(uname)" = Darwin ] && echo lo0 || echo lo)}"
 exec ttyd -W -O -a -i "$IFACE" -p "${TTYD_PORT:-7681}" ./card-terminal.sh

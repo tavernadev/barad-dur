@@ -3,7 +3,7 @@
 # Settings (see example.env): PORT, HOST, TTYD_PORT, OPEN_BROWSER.
 set -euo pipefail
 cd "$(dirname "$0")"
-if [ -f .env ]; then set -a; . ./.env; set +a; fi
+. ./load-env.sh   # .env values; real environment variables win
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT INT TERM
 ./terminal.sh &
 node --watch server.js &

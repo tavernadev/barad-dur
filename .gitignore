@@ -10,5 +10,7 @@ node_modules/
 /.counter
 /data/
 
-# local helper scripts (one-off tooling), not part of the repo
-/scripts/
+# one-off safety backups
+/.backup-*
+/topics/
+/inbox/

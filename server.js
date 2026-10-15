@@ -1,17 +1,20 @@
 // Barad-dûr: tiny dependency-free dev server for the command center. Configuration comes from the environment
 // (see example.env); a local .env file is loaded if present and never overrides real environment variables.
 //   /                -> shell (terminal iframe + content iframe)
-//   /card/<id>       -> same shell, content iframe shows that card
-//   /content/home    -> card grid
-//   /content/<id>/*  -> files from cards/<id>/ (HTML gets the live-reload snippet)
+//   /card/<n>        -> same shell, content iframe shows card n
+//   /content/home    -> the Topics grid and the Inbox
+//   /content/<n>/*   -> files of card n (HTML gets the live-reload snippet; the report also gets the TODO column)
 //   /api/config      -> public settings (app name, terminal port, Linear base URL)
-//   /api/cards       -> GET card metadata from cards/*/card.json; POST creates an Inbox card (title, description)
-//   /api/cards/<id>  -> POST status / priority / inbox / ticket / title / description / notes changes
-//   /static/*        -> shared CSS/JS for generated card pages
-//   /api/cards/<id>/tasks -> GET list; POST add / update / remove (stored in cards/<id>/tasks.json)
-// Every card's index.html also gets the TODO column injected (static/tasks.js).
-//   /events          -> SSE; emits "reload" when cards/ or home.html change
+//   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description)
+//   /api/cards/<n>   -> POST status / priority / inbox / ticket / title / description / notes changes
+//   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
+//   /static/*        -> shared CSS/JS (generated card pages, TODO column, live-update channel)
+//   /events          -> SSE: "reload", "card" (card.json changed) and "tasks" (a task changed)
 // The shell itself is never reloaded automatically, so the terminal keeps running.
+//
+// On disk (see CLAUDE.md): <DATA>/inbox/<n>/ cards awaiting a decision, <DATA>/topics/<n>/ cards being worked on, and
+// <card>/tasks/<n>-<k>/ one folder per task. Finished items live in a done/ folder next to the active ones
+// (inbox/done/, topics/done/, <card>/tasks/done/) so the active folders only hold pending or working items.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -19,32 +22,104 @@ const os = require('os');
 
 const ROOT = __dirname;
 try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* no .env: defaults and the real environment apply */ }
-// Private data (cards/, .sessions/, .counter) lives in ./data, which is gitignored. DATA_DIR overrides it (~ is expanded).
-// Until an old install is moved over by hand, data still sitting in the repo folder keeps being used.
-const DATA = process.env.DATA_DIR ? path.resolve(ROOT, process.env.DATA_DIR.replace(/^~(?=$|[\\/])/, os.homedir()))
-  : fs.existsSync(path.join(ROOT, 'data')) ? path.join(ROOT, 'data')
-  : fs.existsSync(path.join(ROOT, 'cards')) ? ROOT
-  : path.join(ROOT, 'data');
-const CARDS = path.join(DATA, 'cards');
+// Private data lives in ./data (gitignored); DATA_DIR overrides it: a folder inside the repo (relative to the repo
+// folder), a full path, or ~/...
+const DATA = process.env.DATA_DIR ? path.resolve(ROOT, process.env.DATA_DIR.replace(/^~(?=$|[\\/])/, os.homedir())) : path.join(ROOT, 'data');
+const TOPICS = path.join(DATA, 'topics');     // cards you are working on
+const INBOX = path.join(DATA, 'inbox');       // cards awaiting a decision to be worked on
+const DONE = 'done';                          // finished items, inside topics/, inbox/ and <card>/tasks/
+const SESSIONS = path.join(DATA, '.sessions'); // Claude session id per card number (and "main")
+const COUNTER = path.join(DATA, '.counter');   // last card number handed out
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '127.0.0.1';
 // Public settings the browser needs (served at /api/config). No secrets here.
 const CONFIG = {
-  appName: process.env.APP_NAME || 'Barad-d\u00fbr',
+  appName: process.env.APP_NAME || 'Barad-dûr',
   ttydPort: Number(process.env.TTYD_PORT || 7681),
   linearBaseUrl: process.env.LINEAR_BASE_URL || '', // e.g. https://linear.app/<workspace>/issue/ ; empty = tickets are not links
 };
 
-// Old layout still in use: say how to move it. Or DATA_DIR points elsewhere while old data remains here: say so too.
-if (DATA === ROOT) console.warn('Private data is still in the repo folder. Stop the app and move cards/, .sessions/ and .counter into ./data (gitignored).');
-if (DATA !== ROOT && fs.existsSync(path.join(ROOT, 'cards')) && !fs.existsSync(path.join(DATA, 'cards'))) {
-  console.warn(`DATA_DIR is ${DATA} but cards/ still exists in ${ROOT}. Stop the app and move cards/, .sessions/ and .counter there.`);
+const isNumber = (s) => /^\d+$/.test(s);
+const isTaskId = (s) => /^\d+-\d+$/.test(s);
+const readCounter = (file) => parseInt(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '0', 10) || 0;
+
+function moveSafe(src, dst) {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  try { fs.renameSync(src, dst); } catch (e) {
+    if (e.code !== 'EXDEV') throw e;
+    fs.cpSync(src, dst, { recursive: true }); fs.rmSync(src, { recursive: true, force: true }); // other volume
+  }
 }
 
-// First run on a fresh clone: create the data folder and seed one example card so the UI is not empty.
-if (!fs.existsSync(CARDS)) {
-  fs.mkdirSync(CARDS, { recursive: true });
-  try { fs.cpSync(path.join(ROOT, 'examples', 'cards'), CARDS, { recursive: true }); } catch { /* examples are optional */ }
+// Where a card's folder lives, by number: inbox or topics, and in done/ once its status is Done.
+const cardPath = (id, inbox, done) => path.join(inbox ? INBOX : TOPICS, ...(done ? [DONE] : []), String(id));
+function findCard(id) {
+  if (!isNumber(String(id))) return null;
+  for (const inbox of [false, true]) for (const done of [false, true]) {
+    const dir = cardPath(id, inbox, done);
+    if (fs.existsSync(path.join(dir, 'card.json'))) return { id: String(id), dir, inbox, done };
+  }
+  return null;
+}
+
+// ---- tasks: one folder per task, <card>/tasks/<card number>-<task number>/task.json (done ones in tasks/done/)
+const TASK_BY = ['me', 'claude'];
+const taskPath = (cardDir, tid, done) => path.join(cardDir, 'tasks', ...(done ? [DONE] : []), tid);
+
+function cleanTask(t, order) {
+  return {
+    order,
+    title: t.title ?? t.text,
+    status: OPTIONS.status.includes(t.status) ? t.status : (t.done ? 'Done' : 'Pending'),
+    priority: OPTIONS.priority.includes(t.priority) ? t.priority : '',
+    updates: (Array.isArray(t.updates) ? t.updates : []).filter((u) => u && typeof u.text === 'string')
+      .map((u) => ({ at: typeof u.at === 'string' ? u.at : '', by: TASK_BY.includes(u.by) ? u.by : 'claude', text: u.text })),
+  };
+}
+// Every task of a card (active and done), ordered. Tolerates hand-written task.json files (legacy "text", no order).
+function readTasks(cardDir) {
+  const found = [];
+  for (const done of [false, true]) {
+    const base = path.join(cardDir, 'tasks', ...(done ? [DONE] : []));
+    let names = [];
+    try { names = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory() && isTaskId(d.name)).map((d) => d.name); } catch { /* none yet */ }
+    for (const name of names) {
+      let raw;
+      try { raw = JSON.parse(fs.readFileSync(path.join(base, name, 'task.json'), 'utf8')); } catch { continue; }
+      if (raw && typeof (raw.title ?? raw.text) === 'string') found.push({ id: name, k: Number(name.split('-')[1]), raw });
+    }
+  }
+  found.sort((a, b) => (Number(a.raw.order) || a.k) - (Number(b.raw.order) || b.k) || a.k - b.k);
+  return found.map((x, i) => ({ id: x.id, ...cleanTask(x.raw, i + 1) }));
+}
+// Write one task into its folder; a task whose status is Done lives in tasks/done/.
+function saveTask(cardDir, t) {
+  const here = taskPath(cardDir, t.id, t.status === 'Done'), other = taskPath(cardDir, t.id, t.status !== 'Done');
+  if (!fs.existsSync(here) && fs.existsSync(other)) moveSafe(other, here);
+  fs.mkdirSync(here, { recursive: true });
+  fs.writeFileSync(path.join(here, 'task.json'),
+    JSON.stringify({ id: t.id, order: t.order, title: t.title, status: t.status, priority: t.priority, updates: t.updates }, null, 2) + '\n');
+}
+const removeTask = (cardDir, tid) => { for (const d of [false, true]) fs.rmSync(taskPath(cardDir, tid, d), { recursive: true, force: true }); };
+function nextTaskNumber(cardDir, cardId) {
+  const file = path.join(cardDir, 'tasks', '.counter');
+  const n = Math.max(readCounter(file), ...readTasks(cardDir).map((t) => Number(t.id.split('-')[1]))) + 1;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, n + '\n');
+  return n;
+}
+// Old layout: a single tasks.json per card -> task folders.
+function convertLegacyTasks(cardDir, cardId) {
+  const file = path.join(cardDir, 'tasks.json');
+  if (!fs.existsSync(file)) return;
+  let raw = [];
+  try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* unreadable: leave the file where it is */ return; }
+  const list = (Array.isArray(raw) ? raw : []).map((t, i) => ({ t, i })).filter(({ t }) => t && typeof (t.title ?? t.text) === 'string')
+    .sort((a, b) => (Number(a.t.order) || a.i + 1) - (Number(b.t.order) || b.i + 1) || a.i - b.i);
+  list.forEach(({ t }, k) => saveTask(cardDir, { id: `${cardId}-${k + 1}`, ...cleanTask(t, k + 1) }));
+  fs.mkdirSync(path.join(cardDir, 'tasks'), { recursive: true });
+  fs.writeFileSync(path.join(cardDir, 'tasks', '.counter'), list.length + '\n');
+  fs.rmSync(file);
 }
 
 // Editable card fields and their allowed values (shared with the UI via /api/options).
@@ -58,35 +133,12 @@ const STATIC = path.join(ROOT, 'static');
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// Every card gets a workspace number (#1, #2, ...) that is ours and never reused; the Linear ticket key
-// ("ticket" in card.json) is optional and can be added later, so it is not the identifier.
-const COUNTER = path.join(DATA, '.counter');
+// Every card gets a workspace number (#1, #2, ...) that is ours and never reused; it is also the card's folder name.
+// The Linear ticket key ("ticket" in card.json) is optional and can be added later, so it is not the identifier.
 function nextNumber() {
-  const stored = parseInt(fs.existsSync(COUNTER) ? fs.readFileSync(COUNTER, 'utf8') : '0', 10) || 0;
-  const n = Math.max(stored, ...listCards().map((c) => Number(c.number) || 0)) + 1;
+  const n = Math.max(readCounter(COUNTER), ...listCards().map((c) => c.number)) + 1;
   fs.writeFileSync(COUNTER, n + '\n');
   return n;
-}
-// Cards created before numbering existed get numbers in the order their folders were created.
-function backfillNumbers() {
-  listCards().filter((c) => !c.number)
-    .map((c) => ({ c, t: fs.statSync(path.join(CARDS, c.id)).birthtimeMs }))
-    .sort((a, b) => a.t - b.t)
-    .forEach(({ c }) => {
-      const file = path.join(CARDS, c.id, 'card.json');
-      const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
-      meta.number = nextNumber();
-      fs.writeFileSync(file, JSON.stringify(meta, null, 2) + '\n');
-    });
-}
-
-// Inbox items are real cards: cards/<id>/ with card.json + a generated index.html, flagged "inbox": true.
-function newCardId(title) {
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'item';
-  const base = `${today().replace(/-/g, '')}-${slug}`;
-  let id = base, n = 2;
-  while (fs.existsSync(path.join(CARDS, id))) id = `${base}-${n++}`;
-  return id;
 }
 
 function renderCardHtml(meta) {
@@ -138,38 +190,6 @@ function readJson(req, res, cb) {
   });
 }
 
-// Tasks belong to a card: cards/<id>/tasks.json, an ordered list of
-//   { "id": "t1", "order": 1, "title": "...", "status": "Pending", "priority": "High",
-//     "updates": [{ "at": "<ISO time>", "by": "me" | "claude", "text": "..." }] }
-// A card's Claude session can edit the file directly (append to "updates" with by: "claude"); the column and
-// API normalize whatever is there (legacy "text" -> title, missing ids/order, unknown status/priority).
-const TASK_BY = ['me', 'claude'];
-const taskFile = (id) => {
-  const file = path.join(CARDS, id, 'tasks.json');
-  return file.startsWith(CARDS + path.sep) && fs.existsSync(path.join(CARDS, id, 'card.json')) ? file : null;
-};
-function readTasks(file) {
-  let raw = [];
-  try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* missing or invalid: start empty */ }
-  const seen = new Set();
-  return (Array.isArray(raw) ? raw : []).map((t, i) => ({ t, i }))
-    .filter(({ t }) => t && typeof (t.title ?? t.text) === 'string')
-    .sort((a, b) => (Number(a.t.order) || a.i + 1) - (Number(b.t.order) || b.i + 1) || a.i - b.i)
-    .map(({ t }, k) => {
-      let id = typeof t.id === 'string' && t.id ? t.id : 't' + (k + 1);
-      while (seen.has(id)) id += '_';
-      seen.add(id);
-      return {
-        id, order: k + 1, title: t.title ?? t.text,
-        status: OPTIONS.status.includes(t.status) ? t.status : (t.done ? 'Done' : 'Pending'),
-        priority: OPTIONS.priority.includes(t.priority) ? t.priority : '',
-        updates: (Array.isArray(t.updates) ? t.updates : []).filter((u) => u && typeof u.text === 'string')
-          .map((u) => ({ at: typeof u.at === 'string' ? u.at : '', by: TASK_BY.includes(u.by) ? u.by : 'claude', text: u.text })),
-      };
-    });
-}
-const writeTasks = (file, list) => fs.writeFileSync(file, JSON.stringify(list, null, 2) + '\n');
-
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -201,13 +221,26 @@ function broadcast(event = 'reload', data = '1') {
   clearTimeout(timers[event + data]);
   timers[event + data] = setTimeout(() => clients.forEach((res) => res.write(`event: ${event}\ndata: ${data}\n\n`)), 100);
 }
-// tasks.json edits (by the UI or by a card's Claude session) refresh only the TODO column, never the whole page.
-fs.watch(CARDS, { recursive: true }, (_ev, name) => {
-  const n = name ? String(name) : '';
-  const t = n.match(/^([^/\\]+)[/\\]tasks\.json$/), c = n.match(/^([^/\\]+)[/\\]card\.json$/);
-  if (t) broadcast('tasks', t[1]); else if (c) broadcast('card', c[1]); else broadcast('reload');
+// Task edits (UI or a card's Claude session) refresh only the TODO column; card.json edits refresh a card's fields in
+// place; anything else (moves between inbox/topics/done, reports) reloads the content pane.
+function onCardsChange(_ev, name) {
+  const parts = String(name || '').split(/[\\/]/);
+  if (parts[0] === DONE) parts.shift();
+  if (isNumber(parts[0] || '') && parts[1] === 'tasks') broadcast('tasks', parts[0]);
+  else if (isNumber(parts[0] || '') && parts[1] === 'card.json') broadcast('card', parts[0]);
+  else broadcast('reload');
+}
+const watchCards = () => { for (const d of [TOPICS, INBOX]) fs.watch(d, { recursive: true }, onCardsChange); }; // called once the folders exist
+// home.html: watch the folder (survives editors that save by replacing the file) and reload only when the file's
+// modification time really changed. A single-file fs.watch on macOS also fires on mere reads, and every reload is a
+// read: that made the main page reload every second or two.
+const HOME = path.join(ROOT, 'home.html');
+let homeMtime = fs.statSync(HOME).mtimeMs;
+fs.watch(ROOT, (_ev, name) => {
+  if (name !== 'home.html') return;
+  let m; try { m = fs.statSync(HOME).mtimeMs; } catch { return; }
+  if (m !== homeMtime) { homeMtime = m; broadcast('reload'); }
 });
-fs.watch(path.join(ROOT, 'home.html'), () => broadcast('reload'));
 setInterval(() => clients.forEach((res) => res.write(': ping\n\n')), 25000).unref();
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -232,19 +265,91 @@ function sendFile(res, file, inject = true, extra = '') {
   });
 }
 
-function listCards() {
-  return fs.readdirSync(CARDS, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .flatMap((d) => {
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(CARDS, d.name, 'card.json'), 'utf8'));
-        return [{ id: d.name, ...meta }];
-      } catch { return []; }
-    })
-    .sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
+// Old layout: <base>/cards/<slug>/ (card.json with "inbox", one tasks.json), <base>/.sessions/<slug>, <base>/.counter,
+// where <base> is the data folder or the repo folder. Moved once into inbox/<n> or topics/<n> (done/ for finished
+// cards), tasks.json becomes task folders, sessions follow the number. Nothing is overwritten.
+function migrateLegacyLayout() {
+  const bases = [...new Set([DATA, ROOT])].filter((b) => fs.existsSync(path.join(b, 'cards')));
+  if (!bases.length) return;
+  // Exclusive lock: a second instance starting at the same moment waits, then finds nothing left to move.
+  const lock = path.join(DATA, '.migrating');
+  fs.mkdirSync(DATA, { recursive: true });
+  for (let i = 0; ; i++) {
+    try { fs.mkdirSync(lock); break; } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      if (i >= 100) { fs.rmSync(lock, { recursive: true, force: true }); continue; } // 10s: a crashed run left it behind
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+  try { moveLegacyCards(bases); } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+}
+function moveLegacyCards(bases) {
+  const moved = [];
+  for (const base of bases) {
+    const old = path.join(base, 'cards');
+    if (!fs.existsSync(old)) continue; // another instance already moved it
+    for (const d of [TOPICS, INBOX, SESSIONS]) fs.mkdirSync(d, { recursive: true });
+    const cards = fs.readdirSync(old, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && fs.existsSync(path.join(old, d.name, 'card.json')))
+      .map((d) => {
+        let meta = {};
+        try { meta = JSON.parse(fs.readFileSync(path.join(old, d.name, 'card.json'), 'utf8')); } catch { /* keep going */ }
+        return { name: d.name, meta, born: fs.statSync(path.join(old, d.name)).birthtimeMs };
+      }).sort((a, b) => a.born - b.born);
+    const used = new Set(listCards().map((c) => c.number));
+    let max = Math.max(readCounter(COUNTER), readCounter(path.join(base, '.counter')), ...used, ...cards.map((c) => Number(c.meta.number) || 0));
+    for (const c of cards) { // keep a card's own number when it is free, so "#4" stays "#4"
+      const n = Number(c.meta.number);
+      if (Number.isInteger(n) && n > 0 && !used.has(n)) { c.n = n; used.add(n); }
+    }
+    for (const c of cards) if (!c.n) { c.n = ++max; used.add(c.n); }
+    for (const c of cards) {
+      const inbox = !!c.meta.inbox, done = c.meta.status === 'Done';
+      delete c.meta.inbox; // derived from where the folder lives
+      c.meta.number = c.n;
+      fs.writeFileSync(path.join(old, c.name, 'card.json'), JSON.stringify(c.meta, null, 2) + '\n');
+      const dst = cardPath(c.n, inbox, done);
+      moveSafe(path.join(old, c.name), dst);
+      convertLegacyTasks(dst, c.n);
+      const sess = path.join(base, '.sessions', c.name);
+      if (fs.existsSync(sess) && !fs.existsSync(path.join(SESSIONS, String(c.n)))) moveSafe(sess, path.join(SESSIONS, String(c.n)));
+      moved.push(`#${c.n} <- cards/${c.name}  (${inbox ? 'inbox' : 'topics'}${done ? '/done' : ''})`);
+    }
+    const mainSess = path.join(base, '.sessions', 'main');
+    if (base !== DATA && fs.existsSync(mainSess) && !fs.existsSync(path.join(SESSIONS, 'main'))) moveSafe(mainSess, path.join(SESSIONS, 'main'));
+    fs.writeFileSync(COUNTER, Math.max(max, readCounter(COUNTER)) + '\n');
+    if (base !== DATA) fs.rmSync(path.join(base, '.counter'), { force: true });
+    for (const leftover of [old, path.join(base, '.sessions')]) { try { fs.rmdirSync(leftover); } catch { /* not empty: left for you to look at */ } }
+  }
+  if (moved.length) console.log(`Moved ${moved.length} cards into ${DATA}:\n  ${moved.join('\n  ')}`);
 }
 
-try { backfillNumbers(); } catch (e) { console.error('number backfill failed:', e.message); }
+// Every card: active ones plus those in done/. inbox / done come from where the folder lives, the number from its name.
+function listCards() {
+  const out = [];
+  for (const inbox of [false, true]) for (const done of [false, true]) {
+    const base = path.dirname(cardPath(0, inbox, done));
+    let names = [];
+    try { names = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory() && isNumber(d.name)).map((d) => d.name); } catch { /* folder not created yet */ }
+    for (const name of names) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(base, name, 'card.json'), 'utf8'));
+        out.push({ ...meta, id: name, number: Number(name), inbox, done });
+      } catch { /* not a card */ }
+    }
+  }
+  return out.sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
+}
+
+migrateLegacyLayout();
+
+// First run on a fresh clone: create the folders and seed one example card so the UI is not empty.
+if (!fs.existsSync(TOPICS) && !fs.existsSync(INBOX)) {
+  fs.mkdirSync(TOPICS, { recursive: true });
+  try { fs.cpSync(path.join(ROOT, 'examples', 'topics'), TOPICS, { recursive: true }); } catch { /* examples are optional */ }
+}
+for (const d of [TOPICS, INBOX]) fs.mkdirSync(d, { recursive: true });
+watchCards();
 
 http.createServer((req, res) => {
   const url = new URL(req.url, `http://${HOST}`);
@@ -258,19 +363,19 @@ http.createServer((req, res) => {
     return;
   }
   if (p === '/api/cards' && req.method === 'POST') {
-    // Create an Inbox card: title + description -> cards/<id>/{card.json,index.html}
+    // Create a card in the Inbox: title + description -> inbox/<number>/{card.json,index.html}
     if (!guardJson(req, res)) return;
     return readJson(req, res, (d) => {
       const title = typeof d.title === 'string' ? d.title.trim() : '';
       const description = typeof d.description === 'string' ? d.description.trim() : '';
       if (!title || title.length > 200 || description.length > 4000) return send(res, 400, 'Invalid title or description');
-      const id = newCardId(title);
-      const dir = path.join(CARDS, id);
-      const meta = { number: nextNumber(), title, description, inbox: true, status: 'Pending', tags: [], created: today(), updated: today() };
-      fs.mkdirSync(dir);
+      const number = nextNumber();
+      const dir = cardPath(number, true, false);
+      const meta = { number, title, description, status: 'Pending', tags: [], created: today(), updated: today() };
+      fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'index.html'), renderCardHtml(meta));
       fs.writeFileSync(path.join(dir, 'card.json'), JSON.stringify(meta, null, 2) + '\n'); // last: the card appears once complete
-      send(res, 201, JSON.stringify({ id, ...meta }), TYPES['.json']);
+      send(res, 201, JSON.stringify({ ...meta, id: String(number), inbox: true, done: false }), TYPES['.json']);
     });
   }
   if (p === '/api/cards') return send(res, 200, JSON.stringify(listCards()), TYPES['.json']);
@@ -279,27 +384,26 @@ http.createServer((req, res) => {
 
   const td = p.match(/^\/api\/cards\/([^/]+)\/tasks$/);
   if (td) {
-    const file = taskFile(td[1]);
-    if (!file) return send(res, 404, 'Not found');
-    if (req.method === 'GET') return send(res, 200, JSON.stringify(readTasks(file)), TYPES['.json']);
+    const card = findCard(td[1]);
+    if (!card) return send(res, 404, 'Not found');
+    if (req.method === 'GET') return send(res, 200, JSON.stringify(readTasks(card.dir)), TYPES['.json']);
     if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
     if (!guardJson(req, res)) return;
     return readJson(req, res, (d) => {
-      const list = readTasks(file);
+      const list = readTasks(card.dir);
       const bad = (m) => send(res, 400, m);
       if (d.status !== undefined && !OPTIONS.status.includes(d.status)) return bad('Unknown status');
       if (d.priority !== undefined && !OPTIONS.priority.includes(d.priority)) return bad('Unknown priority');
-      if (d.id === undefined) { // add a task
+      if (d.id === undefined) { // add a task: folder <card number>-<next task number>
         const title = typeof d.title === 'string' ? d.title.trim() : '';
         if (!title || title.length > 300) return bad('Invalid title');
-        let n = list.length + 1;
-        while (list.some((t) => t.id === 't' + n)) n++;
-        list.push({ id: 't' + n, order: list.length + 1, title, status: d.status || 'Pending', priority: d.priority || '', updates: [] });
+        const id = `${card.id}-${nextTaskNumber(card.dir, card.id)}`;
+        list.push({ id, order: list.length + 1, title, status: d.status || 'Pending', priority: d.priority || '', updates: [] });
       } else { // change an existing task
         const i = list.findIndex((t) => t.id === d.id);
         if (i === -1) return send(res, 404, 'No such task');
         const t = list[i];
-        if (d.remove === true) list.splice(i, 1);
+        if (d.remove === true) { removeTask(card.dir, t.id); list.splice(i, 1); }
         else {
           if (d.status !== undefined) t.status = d.status;
           if (d.priority !== undefined) t.priority = d.priority;
@@ -315,8 +419,7 @@ http.createServer((req, res) => {
           }
         }
       }
-      list.forEach((t, k) => { t.order = k + 1; });
-      writeTasks(file, list);
+      list.forEach((t, k) => { t.order = k + 1; saveTask(card.dir, t); });
       send(res, 200, JSON.stringify(list), TYPES['.json']);
     });
   }
@@ -324,8 +427,8 @@ http.createServer((req, res) => {
   const st = p.match(/^\/api\/cards\/([^/]+)$/);
   if (st && req.method === 'POST') {
     if (!guardJson(req, res)) return;
-    const file = path.join(CARDS, st[1], 'card.json');
-    if (!file.startsWith(CARDS + path.sep) || !fs.existsSync(file)) return send(res, 404, 'Not found');
+    const card = findCard(st[1]);
+    if (!card) return send(res, 404, 'Not found');
     return readJson(req, res, (changes) => {
       const fields = Object.keys(changes);
       const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
@@ -333,16 +436,24 @@ http.createServer((req, res) => {
       const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || (f === 'inbox' && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f]))
         || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]));
       if (!fields.length || !fields.every(valid)) return send(res, 400, 'Unknown field or value');
+      const file = path.join(card.dir, 'card.json');
       const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
       fields.forEach((f) => {
+        if (f === 'inbox') return; // not stored: it is where the folder lives
         if (f === 'title' || f === 'description') meta[f] = changes[f].trim();
         else if (f !== 'ticket') meta[f] = changes[f];
         else if (changes[f].trim()) meta.ticket = changes[f].trim().toUpperCase(); // Linear key, e.g. ABC-123
         else delete meta.ticket;
       });
+      delete meta.inbox;
+      meta.number = Number(card.id);
       meta.updated = today();
       fs.writeFileSync(file, JSON.stringify(meta, null, 2) + '\n');
-      send(res, 200, JSON.stringify(meta), TYPES['.json']);
+      // Moving a card between Inbox and Topics, or to/from done/, is moving its folder.
+      const inbox = changes.inbox !== undefined ? changes.inbox : card.inbox, done = meta.status === 'Done';
+      const dir = cardPath(card.id, inbox, done);
+      if (dir !== card.dir) moveSafe(card.dir, dir);
+      send(res, 200, JSON.stringify({ ...meta, id: card.id, inbox, done }), TYPES['.json']);
     });
   }
 
@@ -357,11 +468,11 @@ http.createServer((req, res) => {
 
   const m = p.match(/^\/content\/([^/]+)\/(.*)$/);
   if (m) {
-    const dir = path.join(CARDS, m[1]);
-    const file = path.join(dir, m[2] || 'index.html');
-    // Stay inside cards/<id>/ and never serve metadata-less dirs outside cards/
-    if (!file.startsWith(dir + path.sep) || !dir.startsWith(CARDS + path.sep)) return send(res, 403, 'Forbidden');
-    const isReport = file === path.join(dir, 'index.html');
+    const card = findCard(m[1]);
+    if (!card) return send(res, isNumber(m[1]) ? 404 : 403, isNumber(m[1]) ? 'Not found' : 'Forbidden');
+    const file = path.join(card.dir, m[2] || 'index.html');
+    if (!file.startsWith(card.dir + path.sep)) return send(res, 403, 'Forbidden'); // stay inside the card's folder
+    const isReport = file === path.join(card.dir, 'index.html');
     return sendFile(res, file, true, isReport ? '<script src="/static/tasks.js" defer></script>' : '');
   }
   send(res, 404, 'Not found');

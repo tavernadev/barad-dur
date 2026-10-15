@@ -69,6 +69,9 @@
   .item[draggable="true"] { cursor:grab; }
   .item.dragging { opacity:.5; }
   main { min-height:60vh; border-radius:10px; }
+  .toggle { font:inherit; font-size:13px; color:var(--muted); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:3px 12px; cursor:pointer; }
+  .toggle:hover { border-color:var(--accent); color:var(--accent); }
+  .card.done, .item.done { opacity:.6; }
   main.drop-over { outline:2px dashed var(--accent); outline-offset:6px; background:color-mix(in srgb, var(--accent) 6%, transparent); }
 </style>
 </head>
@@ -76,8 +79,11 @@
 <div class="wrap">
   <div class="layout">
     <main>
-      <h1>Topics</h1>
-      <p class="sub">Tickets and topics you are working on. Each card is a folder under <code>cards/&lt;id&gt;/</code>.</p>
+      <div class="head">
+        <h1>Topics</h1>
+        <button class="toggle" id="show-done" type="button" hidden></button>
+      </div>
+      <p class="sub">Cards you are working on and tracking. Each one is a folder under <code>topics/&lt;number&gt;/</code>.</p>
       <div class="grid" id="grid"></div>
     </main>
 
@@ -86,7 +92,7 @@
         <h1>Inbox</h1>
         <button class="add" id="add" title="Add to inbox" aria-label="Add to inbox">+</button>
       </div>
-      <p class="sub">Things to pick up later.</p>
+      <p class="sub">Cards awaiting a decision to be worked on (<code>inbox/&lt;number&gt;/</code>).</p>
       <form id="form" autocomplete="off">
         <input id="f-title" name="title" placeholder="Title" maxlength="200" required>
         <textarea id="f-desc" name="description" placeholder="Description" maxlength="4000"></textarea>
@@ -140,13 +146,21 @@
   });
 
   loadConfig().then(() => fetch('/api/cards')).then((r) => r.json()).then((cards) => {
-    const topics = cards.filter((c) => !c.inbox).sort(byNumber);
-    const inbox = cards.filter((c) => c.inbox).sort(byNumber);
+    // Done cards live in done/ folders and are hidden unless you ask (the choice is remembered).
+    const showDone = localStorage.getItem('workspace.showDone') === '1';
+    const doneCount = cards.filter((c) => c.done).length;
+    const toggle = document.getElementById('show-done');
+    toggle.hidden = doneCount === 0;
+    toggle.textContent = (showDone ? 'Hide done' : 'Show done') + ' (' + doneCount + ')';
+    toggle.addEventListener('click', () => { localStorage.setItem('workspace.showDone', showDone ? '' : '1'); location.reload(); });
+    const visible = (c) => showDone || !c.done;
+    const topics = cards.filter((c) => !c.inbox && visible(c)).sort(byNumber);
+    const inbox = cards.filter((c) => c.inbox && visible(c)).sort(byNumber);
 
     // ---- Inbox list
     const inboxEl = document.getElementById('inbox');
     inboxEl.innerHTML = inbox.length ? inbox.map((c) => `
-      <article class="item" data-id="${esc(c.id)}">
+      <article class="item${c.done ? ' done' : ''}" data-id="${esc(c.id)}">
         <a href="/card/${encodeURIComponent(c.id)}">
           <span class="num">#${esc(c.number ?? '?')}</span>
           <span class="t">${esc(c.title)}</span>
@@ -196,9 +210,13 @@
 
     // ---- Topics grid (title only)
     const grid = document.getElementById('grid');
-    if (!topics.length) { grid.innerHTML = '<div class="empty">No topics yet.</div>'; return; }
+    if (!topics.length) {
+      const hidden = cards.filter((c) => !c.inbox && c.done).length;
+      grid.innerHTML = '<div class="empty">' + (hidden ? 'No active topics. ' + hidden + ' done ' + (hidden === 1 ? 'is' : 'are') + ' hidden.' : 'No topics yet.') + '</div>';
+      return;
+    }
     grid.innerHTML = topics.map((c) => `
-      <article class="card" data-id="${esc(c.id)}">
+      <article class="card${c.done ? ' done' : ''}" data-id="${esc(c.id)}">
         <a class="main" href="/card/${encodeURIComponent(c.id)}">
           <span class="id">#${esc(c.number ?? '?')}</span>
           <span class="title">${esc(c.title)}</span>

@@ -1,5 +1,6 @@
 {
-  "title": "Example card: what a ticket looks like",
+  "number": 1,
+  "title": "Example card: what a topic looks like",
   "description": "A sample card so a fresh install is not empty. Open it, try the TODO column on the right, then delete this folder.",
   "status": "Scoping",
   "priority": "Medium",
