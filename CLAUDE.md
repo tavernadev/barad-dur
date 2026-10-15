@@ -109,6 +109,7 @@ start.sh, terminal.sh, card-terminal.sh, load-env.sh   launchers; load-env.sh re
 scripts/             local helper scripts, gitignored and not in the repo; never commit this folder
 test/api.test.js     API, storage and migration tests in a no-port harness (`npm test`); CI runs them
 example.env          every setting with its default (committed); .env is the local copy (gitignored)
+docs/social-preview.png   1280x640 banner for GitHub's social preview (set by hand: Settings > General > Social preview)
 README.md, LICENSE, .gitignore, package.json
 ```
 
@@ -238,6 +239,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - Reports are working notes, not a source of truth. Say where facts came from (Linear, email thread, code)
   and mark inferences as inferences.
 - Do not write to Linear, Slack, or email from here unless the user asks in that turn.
-- Follow the org rules from the parent `laurel/CLAUDE.md` (for example the `lrl` MongoDB connect commands).
+- Follow any rules from a parent `CLAUDE.md` or organization guidance that applies to the task at hand (for example required
+  commands for connecting to a database).
 - No credentials or customer secrets in cards. Customer names and ticket details already in the briefing
   are fine; don't add personal data beyond what the work needs.
