@@ -18,8 +18,6 @@
   #bar button:focus-visible { outline:2px solid var(--accent); }
   #bar .left { display:flex; align-items:center; gap:6px; }
   #brand { display:flex; align-items:center; gap:8px; padding:5px 8px; }
-  #bar #home-link { color:#4493f8; font-weight:600; padding:6px 10px; }
-  #home-link[hidden] { display:none; }
   #brand img { width:22px; height:22px; display:block; }
   #bar .menu { display:flex; align-items:center; gap:4px; }
   .icon-btn { width:34px; height:34px; display:flex; align-items:center; justify-content:center; padding:0; }
@@ -39,7 +37,6 @@
 <header id="bar">
   <div class="left">
     <button id="brand" type="button" title="Main page"><img src="/static/favicon.png" alt=""><span id="brand-name">Barad-dûr</span></button>
-    <button id="home-link" type="button" title="Back to the main page" hidden>&larr; Home</button>
   </div>
   <nav class="menu" aria-label="Menu">
     <!-- Settings: nothing behind it yet -->
@@ -71,10 +68,6 @@
   // The brand goes to the main page: focus the home tab (opening it if needed); on the home tab it does nothing.
   const goHome = () => { if (sessionFor(location.pathname) !== 'main') openTab('/', 'home'); };
   document.getElementById('brand').addEventListener('click', goHome);
-  // "Home" is only shown on card tabs (the home tab is already home); it replaces the page's own "All cards" link.
-  const homeLink = document.getElementById('home-link');
-  homeLink.hidden = sessionFor(location.pathname) === 'main';
-  homeLink.addEventListener('click', goHome);
   window.name = sessionFor(location.pathname) === 'main' ? 'home' : 'card-' + sessionFor(location.pathname);
   const layout = (p) => {
     const id = sessionFor(p);

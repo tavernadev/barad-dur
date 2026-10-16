@@ -1,5 +1,5 @@
 // Shared worker: owns the single /events stream and fans every event out to all connected pages.
-var ports = [], es = null, EVENTS = ['reload', 'card', 'tasks'];
+var ports = [], es = null, EVENTS = ['reload', 'card', 'tasks', 'tabs'];
 function start() {
   es = new EventSource('/events');
   EVENTS.forEach(function (ev) {

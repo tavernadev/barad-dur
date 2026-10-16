@@ -29,13 +29,17 @@
   select[data-value="Pending"]     { --c:#8b949e; }
   select[data-value="Scoping"]     { --c:#a371f7; }
   select[data-value="In Progress"] { --c:#4493f8; }
+  select[data-value="Blocked"]     { --c:#db61a2; }
   select[data-value="Code Review"] { --c:#d29922; }
   select[data-value="Testing"]     { --c:#f0883e; }
   select[data-value="Done"]        { --c:#3fb950; }
+  select[data-value="Cancelled"]   { --c:#6e7681; }
   select[data-value="Low"]         { --c:#3fb950; }
   select[data-value="Medium"]      { --c:#d29922; }
   select[data-value="High"]        { --c:#f0883e; }
   select[data-value="Urgent"]      { --c:#f85149; }
+  .blocked { font-size:12px; line-height:1.4; padding:6px 8px; border-left:3px solid #db61a2; border-radius:4px; background:color-mix(in srgb, #db61a2 14%, transparent); white-space:pre-wrap; }
+  .blocked.cancelled { border-left-color:#8b949e; background:color-mix(in srgb, #8b949e 14%, transparent); }
   .id, .num { font-size:12px; font-weight:600; color:var(--accent); letter-spacing:.04em; }
   .tk { font:inherit; font-size:12px; border:1px dashed var(--line); background:none; color:var(--muted); border-radius:999px; padding:1px 9px; cursor:pointer; }
   .tk:hover { border-color:var(--accent); color:var(--accent); }
@@ -110,6 +114,7 @@
     </aside>
   </div>
 </div>
+<script src="/static/blocked.js"></script>
 <script>
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
   const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -152,19 +157,20 @@
 
   loadConfig().then(() => fetch('/api/cards')).then((r) => r.json()).then((cards) => {
     // Status filters (remembered in the browser), each one independent: a lit chip shows that status, an unlit one hides it.
-    // Done is off by default (those cards are archived in done/ folders). Done applies to both columns; In Progress and
-    // Scoping apply to Topics. Other statuses (Pending, Code Review, Testing) are always shown.
-    const FILTERS = ['Done', 'In Progress', 'Scoping'];
-    const DEFAULTS = { 'Done': false, 'In Progress': true, 'Scoping': true };
+    // Done and Cancelled are off by default (Done cards are archived in done/ folders). Both apply to both columns; In Progress and
+    // Scoping apply to Topics. Other statuses (Pending, Blocked, Code Review, Testing) are always shown.
+    const FILTERS = ['Done', 'Cancelled', 'In Progress', 'Scoping'];
+    const DEFAULTS = { 'Done': false, 'Cancelled': false, 'In Progress': true, 'Scoping': true };
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('workspace.statusFilters') || '{}') || {}; } catch { /* use the defaults */ }
     const lit = (st) => (typeof saved[st] === 'boolean' ? saved[st] : DEFAULTS[st]);
     const shows = (c, inTopics) => {
       if (c.done || c.status === 'Done') return lit('Done');
+      if (c.status === 'Cancelled') return lit('Cancelled');
       if (inTopics && (c.status === 'In Progress' || c.status === 'Scoping')) return lit(c.status);
       return true;
     };
-    const countOf = (st) => cards.filter((c) => (st === 'Done' ? c.done || c.status === 'Done' : !c.inbox && !c.done && c.status === st)).length;
+    const countOf = (st) => cards.filter((c) => (st === 'Done' ? c.done || c.status === 'Done' : st === 'Cancelled' ? c.status === 'Cancelled' : !c.inbox && !c.done && c.status === st)).length;
     const filtersEl = document.getElementById('filters');
     filtersEl.innerHTML = FILTERS.map((st) => `<button class="chip" type="button" data-value="${esc(st)}" aria-pressed="${lit(st)}" title="${lit(st) ? 'Hide' : 'Show'} ${esc(st)} cards">${esc(st)} (${countOf(st)})</button>`).join('');
     filtersEl.querySelectorAll('.chip').forEach((btn) => btn.addEventListener('click', () => {
@@ -243,6 +249,7 @@
           <select data-field="status" aria-label="Status"></select>
           <select data-field="priority" aria-label="Priority"></select>
         </span>
+        ${c.status === 'Blocked' || c.status === 'Cancelled' ? `<span class="blocked ${c.status === 'Cancelled' ? 'cancelled' : ''}"><b>${esc(c.status)}:</b> ${esc((c.status === 'Blocked' ? c.blockedReason : c.cancelledReason) || 'No reason given.')}</span>` : ''}
         <span class="row">${ticketHtml(c)}</span>
         <span class="row">${(c.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
         ${c.updated ? `<span class="row">Updated ${esc(c.updated)}</span>` : ''}

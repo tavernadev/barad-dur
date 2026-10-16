@@ -43,7 +43,7 @@ function boot({ dataDir, prepare, noBirthtime } = {}) {
     const r = new EventEmitter();
     r.method = method; r.url = url;
     r.headers = { host: '127.0.0.1:8080', 'content-type': 'application/json', ...headers };
-    const res = { writeHead(s) { this.status = s; }, end(b) { let json; try { json = JSON.parse(b); } catch { /* not json */ } resolve({ status: this.status, body: String(b), json }); } };
+    const res = { writeHead(s, h) { this.status = s; this.headers = h || {}; }, end(b) { let json; try { json = JSON.parse(b); } catch { /* not json */ } resolve({ status: this.status, headers: this.headers, body: String(b), json }); } };
     handler(r, res);
     if (body !== undefined) r.emit('data', JSON.stringify(body));
     r.emit('end');
@@ -106,6 +106,28 @@ test('Done cards move into done/ next to the active ones, and come back when reo
   assert.ok(exists(data, 'topics', '1', 'card.json') && !exists(data, 'topics', 'done', '1'));
   const all = (await call('GET', '/api/cards')).json;
   assert.deepEqual(all.map((c) => [c.number, c.inbox, c.done]).sort(), [[1, false, false], [2, true, true]]);
+});
+
+test('Blocked needs a reason, shows it, and drops it when unblocked', async () => {
+  const { call } = boot();
+  const U = '/api/cards/1';
+  assert.equal((await call('POST', U, { status: 'Blocked' })).status, 400, 'no reason');
+  assert.equal((await call('POST', U, { status: 'Blocked', blockedReason: '  ' })).status, 400, 'blank reason');
+  assert.equal((await call('POST', U, { status: 'Testing', blockedReason: 'x' })).status, 400, 'reason on a card that is not blocked');
+  let r = (await call('POST', U, { status: 'Blocked', blockedReason: ' waiting for a decision ' })).json;
+  assert.deepEqual([r.status, r.blockedReason], ['Blocked', 'waiting for a decision']);
+  assert.equal((await call('POST', U, { blockedReason: 'waiting for access' })).json.blockedReason, 'waiting for access', 'reason can be edited while blocked');
+  assert.equal((await call('POST', U, { priority: 'High' })).json.blockedReason, 'waiting for access', 'other edits keep it');
+  assert.equal((await call('GET', '/api/cards')).json.find((c) => c.number === 1).blockedReason, 'waiting for access');
+  r = (await call('POST', U, { status: 'In Progress' })).json;
+  assert.equal(r.blockedReason, undefined);
+  // Cancelled works the same way, with its own field
+  assert.equal((await call('POST', U, { status: 'Cancelled' })).status, 400, 'cancelled needs a reason');
+  assert.equal((await call('POST', U, { status: 'Cancelled', blockedReason: 'x' })).status, 400, 'wrong reason field');
+  r = (await call('POST', U, { status: 'Cancelled', cancelledReason: ' no longer needed ' })).json;
+  assert.deepEqual([r.status, r.cancelledReason, r.blockedReason], ['Cancelled', 'no longer needed', undefined]);
+  r = (await call('POST', U, { status: 'Blocked', blockedReason: 'again' })).json;
+  assert.deepEqual([r.cancelledReason, r.blockedReason], [undefined, 'again'], 'switching drops the other reason');
 });
 
 test('card fields: dropdowns, ticket, text', async () => {
@@ -290,7 +312,11 @@ test('card-terminal.sh: starts a card session, resumes it, and resumes an adopte
   r = run('7');
   assert.match(r.stdout, new RegExp(`--resume ${id}`), 'the stored session is resumed');
   assert.doesNotMatch(r.stdout, /--session-id/);
-  assert.match(run('8').stdout, /Its folder is .*topics\/done\/8/, 'a done card is found in done/');
+  fs.writeFileSync(path.join(data, 'topics', 'done', '8', 'tabs.json'), '[]');
+  r = run('8');
+  assert.match(r.stdout, /Its folder is .*topics\/done\/8/, 'a done card is found in done/');
+  assert.match(r.stdout, /This card has tabs: .*tabs\/scoping\.html.*tabs\/findings\.html.*POST .*\/api\/cards\/8\/tabs/, 'a tabbed card tells its session where to write');
+  assert.doesNotMatch(run('7').stdout, /This card has tabs/, 'a card without tabs.json gets no tab instructions');
 
   // adopt an existing session started somewhere else: resume it from that directory
   fs.writeFileSync(path.join(data, '.sessions', '7'), 'aaaaaaaa-0000-4000-8000-000000000000\n');
@@ -315,6 +341,109 @@ test('card-terminal.sh: starts a card session, resumes it, and resumes an adopte
   assert.equal(real(r.stdout.match(/PWD=(.*)/)[1]), real(elsewhere));
 
   for (const bad of ['', '../x', 'abc', '99']) assert.notEqual(spawnSync('bash', ['-c', `timeout 1 true; DATA_DIR=${data} CLAUDE_BIN=${fake} bash ${path.join(REPO, 'card-terminal.sh')} '${bad}' </dev/null & p=$!; sleep 0.3; kill $p 2>/dev/null; wait $p 2>/dev/null; echo done`], { encoding: 'utf8' }).stdout.includes('PWD='), true, `invalid id '${bad}' must not start claude`);
+});
+
+test('tabs: new cards start with Scoping and Findings, more can be added, older cards have none', async () => {
+  const { call, data, watchers, events } = boot();
+  const created = (await call('POST', '/api/cards', { title: 'Tabbed' })).json; // card #2
+  const T = `/api/cards/${created.id}/tabs`;
+  assert.deepEqual((await call('GET', T)).json, [{ id: 'scoping', title: 'Scoping' }, { id: 'findings', title: 'Findings' }]);
+  const dir = path.join(data, 'inbox', created.id);
+  assert.ok(exists(dir, 'tabs.json') && exists(dir, 'tabs', 'scoping.html') && exists(dir, 'tabs', 'findings.html'));
+  assert.equal((await call('GET', `${T}/scoping`)).body, '', 'an empty tab is empty');
+
+  let r = await call('POST', T, { title: '  What we are fixing  ' });
+  assert.equal(r.status, 201);
+  assert.deepEqual(r.json.at(-1), { id: 'what-we-are-fixing', title: 'What we are fixing' });
+  assert.ok(exists(dir, 'tabs', 'what-we-are-fixing.html'));
+  r = await call('POST', T, { title: 'What we are fixing' });
+  assert.equal(r.json.at(-1).id, 'what-we-are-fixing-2', 'same title gets a distinct tab');
+  for (const bad of [{ title: ' ' }, { title: 'x'.repeat(41) }, {}]) assert.equal((await call('POST', T, bad)).status, 400);
+  assert.equal((await call('POST', T, { title: 'a' }, { origin: 'http://evil.example' })).status, 403);
+
+  fs.writeFileSync(path.join(dir, 'tabs', 'findings.html'), '<h2>RESULT: found it</h2><script>alert(1)</script>');
+  r = await call('GET', `${T}/findings`);
+  assert.match(r.body, /<h2>RESULT: found it<\/h2>/);
+  assert.doesNotMatch(r.body, /live\.js|EventSource/, 'a tab is served as-is, with nothing injected');
+  assert.equal((await call('GET', `${T}/nope`)).status, 404);
+  assert.equal((await call('GET', `${T}/..%2fcard`)).status, 404, 'tab ids cannot point outside tabs/');
+  assert.equal((await call('GET', '/api/cards/abc/tabs')).status, 404);
+
+  // the seeded example card shows what a tabbed card looks like; a card without tabs.json has none
+  assert.equal((await call('GET', '/api/cards/1/tabs')).json.length, 2);
+  fs.rmSync(path.join(data, 'topics', '1', 'tabs.json'));
+  assert.deepEqual((await call('GET', '/api/cards/1/tabs')).json, []);
+
+  // editing a tab file refreshes only that card's open tab
+  const got = events();
+  const inbox = watchers.find((w) => w.path === path.join(data, 'inbox'));
+  inbox.cb('change', `${created.id}/tabs/findings.html`);
+  inbox.cb('change', `${created.id}/tabs.json`);
+  await new Promise((res) => setTimeout(res, 200));
+  assert.ok(got.some((c) => c.startsWith('event: tabs') && c.includes(`data: ${created.id}`)));
+  assert.equal(got.filter((c) => c.startsWith('event: reload')).length, 0, 'no page reload for a tab edit');
+});
+
+test('terminal.sh ends a session when its tab closes (ttyd close signal), and ttyd accepts the signal', () => {
+  const script = fs.readFileSync(path.join(REPO, 'terminal.sh'), 'utf8');
+  assert.match(script, /-s "\$\{TTYD_CLOSE_SIGNAL:-SIGKILL\}"/, 'the close signal is passed to ttyd, SIGKILL by default');
+  assert.match(fs.readFileSync(path.join(REPO, 'example.env'), 'utf8'), /^TTYD_CLOSE_SIGNAL=SIGKILL$/m);
+  const ok = spawnSync('ttyd', ['-s', 'SIGKILL', '--version'], { encoding: 'utf8' });
+  if (ok.error) return; // ttyd is not installed here (CI): the script check above is enough
+  assert.equal(ok.status, 0, 'ttyd accepts -s SIGKILL');
+  assert.notEqual(spawnSync('ttyd', ['-s', 'NOPE', '--version'], { encoding: 'utf8' }).status, 0, 'and rejects a bogus signal name');
+});
+
+test('artifact: optional, never created automatically, attached only on request, rendered sandboxed', async () => {
+  const { call, data, watchers, events } = boot();
+  const card = (await call('POST', '/api/cards', { title: 'With artifact' })).json; // #2, a new tabbed card
+  const A = `/api/cards/${card.id}/artifact`;
+  const dir = path.join(data, 'inbox', card.id);
+
+  // nothing is attached by default: not for new cards, not for the example card
+  assert.equal((await call('GET', A)).body, 'null');
+  assert.equal((await call('GET', '/api/cards/1/artifact')).body, 'null');
+  assert.ok(!exists(dir, 'artifact.json') && !exists(dir, 'artifact'), 'creating a card creates no artifact');
+  assert.equal((await call('GET', `${A}/page`)).status, 404);
+
+  // attach on request
+  const page = '<!doctype html><title>Demo</title><h1>Hello</h1><script>1</script>';
+  const url = 'https://claude.ai/artifact/AbC123xyz?sk=token_-1';
+  let r = await call('POST', A, { url, title: '  Demo artifact  ', html: page });
+  assert.equal(r.status, 201);
+  assert.deepEqual([r.json.url, r.json.title, !!r.json.savedAt], [url, 'Demo artifact', true]);
+  assert.equal(fs.readFileSync(path.join(dir, 'artifact', 'index.html'), 'utf8'), page);
+  assert.equal((await call('GET', A)).json.title, 'Demo artifact');
+
+  // the saved copy is served as it is, inside a sandbox: scripts may run, but with no access to this app
+  r = await call('GET', `${A}/page`);
+  assert.equal(r.body, page, 'nothing is injected into it');
+  assert.match(r.headers['Content-Security-Policy'], /^sandbox allow-scripts allow-popups$/);
+  assert.equal(r.headers['X-Content-Type-Options'], 'nosniff');
+
+  // only claude.ai artifact links, a real page, and same-origin JSON writes
+  for (const bad of [{ url: 'http://claude.ai/artifact/abc', html: page }, { url: 'https://evil.example/artifact/abc', html: page },
+    { url: 'https://claude.ai/artifact/abc/../x', html: page }, { url: 'javascript:alert(1)', html: page }, { url, html: ' ' }, { url }, { url, html: 5 }]) {
+    assert.equal((await call('POST', A, bad)).status, 400, JSON.stringify(bad).slice(0, 60));
+  }
+  assert.equal((await call('POST', A, { url, html: 'x'.repeat(6 * 1024 * 1024 + 1) })).status, 400, 'a page over 6 MB is refused');
+  assert.equal((await call('POST', A, { url, html: page }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await call('POST', A, { url, html: page }, { origin: 'null' })).status, 403, 'a sandboxed frame (Origin: null) cannot write, and does not crash the server');
+  assert.equal((await call('GET', '/api/cards')).status, 200, 'the server is still answering');
+
+  // attaching refreshes the open page's tabs; detaching removes everything and the tab greys out again
+  const got = events();
+  const inbox = watchers.find((w) => w.path === path.join(data, 'inbox'));
+  inbox.cb('change', `${card.id}/artifact.json`);
+  await new Promise((res) => setTimeout(res, 200));
+  assert.ok(got.some((c) => c.startsWith('event: tabs') && c.includes(`data: ${card.id}`)));
+  assert.equal((await call('POST', A, { remove: true })).body, 'null');
+  assert.ok(!exists(dir, 'artifact.json') && !exists(dir, 'artifact'));
+  assert.equal((await call('GET', A)).body, 'null');
+
+  // "artifact" is reserved for the built-in first tab
+  const tabs = (await call('POST', `/api/cards/${card.id}/tabs`, { title: 'Artifact' })).json;
+  assert.equal(tabs.at(-1).id, 'artifact-2');
 });
 
 test('config exposes only browser-safe settings', async () => {

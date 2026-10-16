@@ -8,6 +8,8 @@
 //   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description)
 //   /api/cards/<n>   -> POST status / priority / inbox / ticket / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
+//   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
+//   /api/cards/<n>/tabs  -> GET the card's tabs; GET .../tabs/<id> the tab's HTML; POST {title} adds a tab
 //   /static/*        -> shared CSS/JS (generated card pages, TODO column, live-update channel)
 //   /events          -> SSE: "reload", "card" (card.json changed) and "tasks" (a task changed)
 // The shell itself is never reloaded automatically, so the terminal keeps running.
@@ -109,6 +111,44 @@ function nextTaskNumber(cardDir, cardId) {
   fs.writeFileSync(file, n + '\n');
   return n;
 }
+// ---- tabs: the content area of a card. <card>/tabs.json is the ordered list [{ id, title }] and each tab's content is an HTML
+// fragment in <card>/tabs/<id>.html (no <html>/<head>/<body>), written by the card's Claude session. New cards start with
+// Scoping (what the ticket initially told us) and Findings (what working on the tasks actually showed). Cards without a
+// tabs.json (everything created before tabs existed) keep their single report page.
+const TAB_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const readTabs = (dir) => {
+  let raw = [];
+  try { raw = JSON.parse(fs.readFileSync(path.join(dir, 'tabs.json'), 'utf8')); } catch { return []; }
+  return (Array.isArray(raw) ? raw : [])
+    .filter((t) => t && TAB_ID.test(String(t.id)) && typeof t.title === 'string' && t.title.trim())
+    .map((t) => ({ id: t.id, title: t.title.trim() }));
+};
+function addTab(dir, title) {
+  const tabs = readTabs(dir);
+  const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 36) || 'tab';
+  let id = base, n = 2;
+  while (tabs.some((t) => t.id === id) || id === 'artifact') id = `${base}-${n++}`; // 'artifact' belongs to the built-in first tab
+  fs.mkdirSync(path.join(dir, 'tabs'), { recursive: true });
+  const file = path.join(dir, 'tabs', id + '.html');
+  if (!fs.existsSync(file)) fs.writeFileSync(file, '');
+  tabs.push({ id, title });
+  fs.writeFileSync(path.join(dir, 'tabs.json'), JSON.stringify(tabs, null, 2) + '\n');
+  return tabs;
+}
+
+// ---- artifact: an optional claude.ai artifact attached to a card, shown as the first tab ("Artifact"; greyed out while there is none).
+// artifact.json = { url, title, savedAt } and the saved copy of the page is artifact/index.html. Nothing creates or attaches one
+// automatically: a card session does it only when the user asks. The saved page is untrusted data and is rendered sandboxed.
+const ARTIFACT_URL = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+(?:\?[A-Za-z0-9_=&.-]*)?$/;
+const MAX_ARTIFACT = 6 * 1024 * 1024;
+function readArtifact(dir) {
+  try {
+    const a = JSON.parse(fs.readFileSync(path.join(dir, 'artifact.json'), 'utf8'));
+    if (!a || !ARTIFACT_URL.test(a.url) || !fs.existsSync(path.join(dir, 'artifact', 'index.html'))) return null;
+    return { url: a.url, title: String(a.title || 'Artifact').slice(0, 200), savedAt: String(a.savedAt || '') };
+  } catch { return null; }
+}
+
 // Old layout: a single tasks.json per card -> task folders.
 function convertLegacyTasks(cardDir, cardId) {
   const file = path.join(cardDir, 'tasks.json');
@@ -124,8 +164,10 @@ function convertLegacyTasks(cardDir, cardId) {
 }
 
 // Editable card fields and their allowed values (shared with the UI via /api/options).
+// Statuses that must carry a reason, and the card.json field that holds it.
+const REASON_FIELD = { Blocked: 'blockedReason', Cancelled: 'cancelledReason' };
 const OPTIONS = {
-  status: ['Pending', 'Scoping', 'In Progress', 'Code Review', 'Testing', 'Done'],
+  status: ['Pending', 'Scoping', 'In Progress', 'Blocked', 'Code Review', 'Testing', 'Done', 'Cancelled'],
   priority: ['Low', 'Medium', 'High', 'Urgent'],
 };
 
@@ -174,16 +216,18 @@ function renderCardHtml(meta) {
 // JSON content type forces a CORS preflight, which we never grant; the Origin check is belt and braces.
 function guardJson(req, res) {
   const origin = req.headers.origin;
-  if (!/^application\/json/.test(req.headers['content-type'] || '') || (origin && new URL(origin).host !== req.headers.host)) {
+  let sameOrigin = true;
+  if (origin) { try { sameOrigin = new URL(origin).host === req.headers.host; } catch { sameOrigin = false; } } // "null" (sandboxed frames) is not ours
+  if (!/^application\/json/.test(req.headers['content-type'] || '') || !sameOrigin) {
     send(res, 403, 'Forbidden');
     return false;
   }
   return true;
 }
 
-function readJson(req, res, cb) {
+function readJson(req, res, cb, limit = 16384) {
   let body = '';
-  req.on('data', (c) => { body += c; if (body.length > 16384) req.destroy(); });
+  req.on('data', (c) => { body += c; if (body.length > limit) req.destroy(); });
   req.on('end', () => {
     let data;
     try { data = JSON.parse(body); } catch { return send(res, 400, 'Bad JSON'); }
@@ -228,6 +272,7 @@ function onCardsChange(_ev, name) {
   const parts = String(name || '').split(/[\\/]/);
   if (parts[0] === DONE) parts.shift();
   if (isNumber(parts[0] || '') && parts[1] === 'tasks') broadcast('tasks', parts[0]);
+  else if (isNumber(parts[0] || '') && (parts[1] === 'tabs' || parts[1] === 'tabs.json' || parts[1] === 'artifact' || parts[1] === 'artifact.json')) broadcast('tabs', parts[0]);
   else if (isNumber(parts[0] || '') && parts[1] === 'card.json') broadcast('card', parts[0]);
   else broadcast('reload');
 }
@@ -244,8 +289,8 @@ fs.watch(ROOT, (_ev, name) => {
 });
 setInterval(() => clients.forEach((res) => res.write(': ping\n\n')), 25000).unref();
 
-function send(res, status, body, type = 'text/plain; charset=utf-8') {
-  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+function send(res, status, body, type = 'text/plain; charset=utf-8', extra = {}) {
+  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...extra });
   res.end(body);
 }
 
@@ -375,6 +420,7 @@ http.createServer((req, res) => {
       const meta = { number, title, description, status: 'Pending', tags: [], created: today(), updated: today() };
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'index.html'), renderCardHtml(meta));
+      addTab(dir, 'Scoping'); addTab(dir, 'Findings');
       fs.writeFileSync(path.join(dir, 'card.json'), JSON.stringify(meta, null, 2) + '\n'); // last: the card appears once complete
       send(res, 201, JSON.stringify({ ...meta, id: String(number), inbox: true, done: false }), TYPES['.json']);
     });
@@ -382,6 +428,61 @@ http.createServer((req, res) => {
   if (p === '/api/cards') return send(res, 200, JSON.stringify(listCards()), TYPES['.json']);
   if (p === '/api/options') return send(res, 200, JSON.stringify(OPTIONS), TYPES['.json']);
   if (p === '/api/config') return send(res, 200, JSON.stringify(CONFIG), TYPES['.json']);
+
+  const ar = p.match(/^\/api\/cards\/([^/]+)\/artifact(?:\/(page))?$/);
+  if (ar) {
+    const card = findCard(ar[1]);
+    if (!card) return send(res, 404, 'Not found');
+    if (req.method === 'GET') {
+      const art = readArtifact(card.dir);
+      if (!ar[2]) return send(res, 200, JSON.stringify(art), TYPES['.json']); // null when the card has none
+      if (!art) return send(res, 404, 'Not found');
+      // The saved page runs in a sandbox: scripts allowed, but no access to this app, its storage or its API.
+      return send(res, 200, fs.readFileSync(path.join(card.dir, 'artifact', 'index.html')), TYPES['.html'],
+        { 'Content-Security-Policy': 'sandbox allow-scripts allow-popups', 'X-Content-Type-Options': 'nosniff' });
+    }
+    if (req.method === 'POST' && !ar[2]) { // attach / replace: { url, title?, html }   or detach: { remove: true }
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        if (d.remove === true) {
+          fs.rmSync(path.join(card.dir, 'artifact.json'), { force: true });
+          fs.rmSync(path.join(card.dir, 'artifact'), { recursive: true, force: true });
+          return send(res, 200, 'null', TYPES['.json']);
+        }
+        if (typeof d.url !== 'string' || !ARTIFACT_URL.test(d.url)) return send(res, 400, 'Invalid artifact link');
+        if (typeof d.html !== 'string' || !d.html.trim() || Buffer.byteLength(d.html) > MAX_ARTIFACT) return send(res, 400, 'Invalid page');
+        const title = typeof d.title === 'string' && d.title.trim() ? d.title.trim().slice(0, 200) : 'Artifact';
+        fs.mkdirSync(path.join(card.dir, 'artifact'), { recursive: true });
+        fs.writeFileSync(path.join(card.dir, 'artifact', 'index.html'), d.html);
+        fs.writeFileSync(path.join(card.dir, 'artifact.json'), JSON.stringify({ url: d.url, title, savedAt: new Date().toISOString() }, null, 2) + '\n'); // last: it appears once complete
+        send(res, 201, JSON.stringify(readArtifact(card.dir)), TYPES['.json']);
+      }, MAX_ARTIFACT + 65536);
+      return;
+    }
+    return send(res, 405, 'Method not allowed');
+  }
+
+  const tb = p.match(/^\/api\/cards\/([^/]+)\/tabs(?:\/([^/]+))?$/);
+  if (tb) {
+    const card = findCard(tb[1]);
+    if (!card) return send(res, 404, 'Not found');
+    if (req.method === 'GET') {
+      if (!tb[2]) return send(res, 200, JSON.stringify(readTabs(card.dir)), TYPES['.json']);
+      if (!TAB_ID.test(tb[2]) || !readTabs(card.dir).some((t) => t.id === tb[2])) return send(res, 404, 'Not found');
+      let html = '';
+      try { html = fs.readFileSync(path.join(card.dir, 'tabs', tb[2] + '.html'), 'utf8'); } catch { /* not written yet */ }
+      return send(res, 200, html, TYPES['.txt']); // served as text: the page inserts it, and opening the URL never runs it
+    }
+    if (req.method === 'POST' && !tb[2]) { // add a tab: { "title": "..." }
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        const title = typeof d.title === 'string' ? d.title.trim() : '';
+        if (!title || title.length > 40) return send(res, 400, 'Invalid title');
+        send(res, 201, JSON.stringify(addTab(card.dir, title)), TYPES['.json']);
+      });
+    }
+    return send(res, 405, 'Method not allowed');
+  }
 
   const td = p.match(/^\/api\/cards\/([^/]+)\/tasks$/);
   if (td) {
@@ -435,18 +536,26 @@ http.createServer((req, res) => {
       const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
       const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : v.length <= (f === 'notes' ? 20000 : 4000));
       const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || (f === 'inbox' && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f]))
-        || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]));
+        || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]))
+        || (Object.values(REASON_FIELD).includes(f) && typeof changes[f] === 'string' && changes[f].trim() !== '' && changes[f].trim().length <= 1000);
       if (!fields.length || !fields.every(valid)) return send(res, 400, 'Unknown field or value');
       const file = path.join(card.dir, 'card.json');
       const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Blocked and Cancelled always carry a reason: required when the status changes to it, editable while it stays.
+      const becomes = changes.status !== undefined ? changes.status : meta.status;
+      for (const [st, rf] of Object.entries(REASON_FIELD)) {
+        if (becomes === st && !(changes[rf] || (changes.status === undefined || meta.status === st) && meta[rf])) return send(res, 400, `A reason is required when a card is ${st}`);
+        if (becomes !== st && changes[rf] !== undefined) return send(res, 400, `A reason only applies to a ${st} card`);
+      }
       fields.forEach((f) => {
         if (f === 'inbox') return; // not stored: it is where the folder lives
-        if (f === 'title' || f === 'description') meta[f] = changes[f].trim();
+        if (f === 'title' || f === 'description' || Object.values(REASON_FIELD).includes(f)) meta[f] = changes[f].trim();
         else if (f !== 'ticket') meta[f] = changes[f];
         else if (changes[f].trim()) meta.ticket = changes[f].trim().toUpperCase(); // Linear key, e.g. ABC-123
         else delete meta.ticket;
       });
       delete meta.inbox;
+      for (const [st, rf] of Object.entries(REASON_FIELD)) if (meta.status !== st) delete meta[rf]; // leaving the status drops its reason
       meta.number = Number(card.id);
       meta.updated = today();
       fs.writeFileSync(file, JSON.stringify(meta, null, 2) + '\n');
@@ -474,7 +583,7 @@ http.createServer((req, res) => {
     const file = path.join(card.dir, m[2] || 'index.html');
     if (!file.startsWith(card.dir + path.sep)) return send(res, 403, 'Forbidden'); // stay inside the card's folder
     const isReport = file === path.join(card.dir, 'index.html');
-    return sendFile(res, file, true, isReport ? '<script src="/static/tasks.js" defer></script>' : '');
+    return sendFile(res, file, true, isReport ? '<script src="/static/blocked.js" defer></script><script src="/static/tasks.js" defer></script>' : '');
   }
   send(res, 404, 'Not found');
 }).listen(PORT, HOST, () => console.log(`${CONFIG.appName}: http://${HOST}:${PORT}/`));

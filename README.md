@@ -39,6 +39,7 @@ All settings are environment variables; a local `.env` is loaded if present (see
 | `APP_NAME` | `Barad-dûr` | Browser tab title |
 | `HOST` / `PORT` | `127.0.0.1` / `8080` | Web server. Keep it on loopback |
 | `TTYD_PORT` / `TTYD_INTERFACE` | `7681` / `lo0` or `lo` | Browser terminal |
+| `TTYD_CLOSE_SIGNAL` | `SIGKILL` | Signal sent to a session when its browser tab closes. The default `SIGHUP` left Claude Code running in the background |
 | `DATA_DIR` | `data` | Where your private data lives (`inbox/`, `topics/`, `.sessions/`, `.counter`): a folder inside the repo (relative to the repo folder) or a full path like `/home/you/barad-dur-data` or `~/barad-dur-data` |
 | `LINEAR_BASE_URL` | empty | Ticket links, e.g. `https://linear.app/<workspace>/issue/` |
 | `CLAUDE_BIN` | `claude` | Claude Code executable |
@@ -48,7 +49,7 @@ All settings are environment variables; a local `.env` is loaded if present (see
 
 The main page has two columns: the **Inbox** (cards awaiting a decision on whether they will be worked on) and
 **Topics** (cards you are working on). Move a card from the Inbox to Topics with its button or by dragging it. Every
-card can have **tasks** (the TODO column on its page), and each card gets its own Claude session in its own tab.
+card can have **tasks** (the TODO column on its page) and, for new cards, **tabs** in the content area (an optional Artifact tab that shows an attached claude.ai artifact, Scoping, Findings, and any you add with +), and each card gets its own Claude session in its own tab.
 
 ## Your data stays out of git
 

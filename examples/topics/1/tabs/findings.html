@@ -1,0 +1,7 @@
+<h2>RESULT: the last row of every page is skipped</h2>
+<ul>
+  <li>The page query uses "greater than" instead of "greater than or equal" on the cursor.</li>
+  <li>Reproduced with a 1,001-row export: 2 rows missing.</li>
+</ul>
+<p><b>Why it matters:</b> any export larger than one page is silently incomplete.</p>
+<p><b>Next:</b> fix the comparison and add a test (see the TODO column).</p>

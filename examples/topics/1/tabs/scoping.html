@@ -1,0 +1,12 @@
+<h2>What the ticket says</h2>
+<ul>
+  <li>Customer reports that exports sometimes miss rows (ticket ABC-123).</li>
+  <li>It started after last month's release.</li>
+  <li>One customer is affected so far.</li>
+</ul>
+<div class="callout warn"><b>Unknown:</b> whether other customers are affected.</div>
+<h2>First look</h2>
+<ul>
+  <li>The export job reads in pages of 500 rows.</li>
+  <li>Missing rows are always at a page boundary.</li>
+</ul>

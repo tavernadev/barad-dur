@@ -68,6 +68,94 @@
     }
   }
 
+  // ---------- tabs ----------
+  // Cards created with tabs.json show a sticky tab bar under the card's header. The first tab, "Artifact", is optional: greyed out while
+  // the card has no claude.ai artifact attached, active when it has one (its saved copy renders sandboxed in a frame). After it come
+  // Scoping, Findings and any tab the user asked the card's session to add. A tab is an HTML fragment in <card>/tabs/<id>.html.
+  var tabs = [], artifact = null, activeTab = null, tabBar = null, tabBody = null, TAB_KEY = 'workspace.tab.' + id;
+  var fetchTabs = function () {
+    return Promise.all([
+      fetch(API + '/tabs').then(function (r) { return r.json(); }).catch(function () { return []; }),
+      fetch(API + '/artifact').then(function (r) { return r.json(); }).catch(function () { return null; })
+    ]).then(function (res) { artifact = res[1]; return res[0]; });
+  };
+  var validTab = function (tid) { return tid === 'artifact' ? !!artifact : tabs.some(function (t) { return t.id === tid; }); };
+  function loadTabContent() {
+    if (!activeTab || !tabBody) return;
+    var want = activeTab;
+    if (want === 'artifact') { // untrusted page: sandboxed, no access to this app
+      if (!artifact) return;
+      tabBody.textContent = '';
+      var head = document.createElement('div'); head.className = 'artifact-bar';
+      var name = document.createElement('strong'); name.textContent = artifact.title;
+      var when = document.createElement('span'); when.className = 'muted';
+      when.textContent = artifact.savedAt ? 'Saved copy, ' + new Date(artifact.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Saved copy';
+      var open = document.createElement('a'); open.className = 'artifact-open'; open.href = artifact.url; open.target = '_blank'; open.rel = 'noopener'; open.textContent = 'Open in Claude \u2197';
+      head.appendChild(name); head.appendChild(when); head.appendChild(open);
+      var frame = document.createElement('iframe'); frame.className = 'artifact-frame'; frame.title = artifact.title;
+      frame.setAttribute('sandbox', 'allow-scripts allow-popups');
+      frame.src = API + '/artifact/page?v=' + encodeURIComponent(artifact.savedAt);
+      tabBody.appendChild(head); tabBody.appendChild(frame);
+      return;
+    }
+    fetch(API + '/tabs/' + encodeURIComponent(want)).then(function (r) { return r.ok ? r.text() : ''; }).then(function (html) {
+      if (want !== activeTab) return; // switched tabs meanwhile
+      tabBody.innerHTML = html.trim() ? html : '<p class="muted">Nothing here yet. Ask this card\'s Claude session to fill it in.</p>';
+    }).catch(function () {});
+  }
+  function pick(tid) { activeTab = tid; try { localStorage.setItem(TAB_KEY, activeTab); } catch (_) {} renderTabs(tabs); loadTabContent(); }
+  function renderTabs(list) {
+    tabs = list;
+    if (!tabs.length && !artifact) { if (tabBar) { tabBar.remove(); tabBody.remove(); tabBar = tabBody = null; } return; }
+    if (!tabBar) {
+      var wrap = document.querySelector('.wrap'); if (!wrap) return;
+      tabBar = document.createElement('div'); tabBar.className = 'tabs'; tabBar.setAttribute('role', 'tablist');
+      tabBody = document.createElement('div'); tabBody.className = 'tab-body';
+      // right under the Description, so the tabs are the first thing you reach; Notes stays below them
+      var notesHead = Array.prototype.filter.call(wrap.querySelectorAll('h2'), function (h) { return h.textContent.trim() === 'Notes'; })[0] || null;
+      wrap.insertBefore(tabBar, notesHead); wrap.insertBefore(tabBody, notesHead);
+    }
+    var saved = null; try { saved = localStorage.getItem(TAB_KEY); } catch (_) {}
+    if (!activeTab || !validTab(activeTab)) activeTab = validTab(saved) ? saved : (artifact ? 'artifact' : tabs[0].id);
+    tabBar.textContent = '';
+    var mk = function (tid, label) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'tab'; b.setAttribute('role', 'tab'); b.textContent = label;
+      b.setAttribute('aria-selected', String(tid === activeTab));
+      return b;
+    };
+    var art = mk('artifact', 'Artifact'); // always first; optional, so greyed out and not clickable until one is attached
+    if (artifact) { art.addEventListener('click', function () { pick('artifact'); }); }
+    else { art.disabled = true; art.setAttribute('aria-selected', 'false'); art.title = 'No artifact attached to this card. Ask its Claude session to attach one.'; }
+    tabBar.appendChild(art);
+    tabs.forEach(function (t) {
+      var b = mk(t.id, t.title);
+      b.addEventListener('click', function () { pick(t.id); });
+      tabBar.appendChild(b);
+    });
+    var add = document.createElement('button');
+    add.type = 'button'; add.className = 'tab tab-add'; add.textContent = '+'; add.title = 'Add a tab'; add.setAttribute('aria-label', 'Add a tab');
+    add.addEventListener('click', function () {
+      var input = document.createElement('input');
+      input.className = 'tab-input'; input.placeholder = 'Tab name'; input.maxLength = 40; input.setAttribute('aria-label', 'New tab name');
+      add.replaceWith(input); input.focus();
+      var done = false;
+      var finish = function (commit) {
+        if (done) return; done = true;
+        var title = input.value.trim();
+        if (!commit || !title) { renderTabs(tabs); return; }
+        fetch(API + '/tabs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: title }) })
+          .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(function (list) { tabs = list; pick(list[list.length - 1].id); say('Tab added'); })
+          .catch(function () { say('Could not add the tab', true); renderTabs(tabs); });
+      };
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); });
+      input.addEventListener('blur', function () { finish(true); });
+    });
+    tabBar.appendChild(add);
+  }
+  function buildTabs() { fetchTabs().then(function (list) { renderTabs(list); loadTabContent(); }); }
+
   // ---------- Linear ticket (optional; the main page shows and sets it the same way) ----------
   var linearBase = '', ticketBox = null;
   function buildTicket() {
@@ -168,8 +256,10 @@
       buildSelects(res[0]);
       buildFields(c);
       apply(c);
+      buildTabs();
     });
 
   // Other writers (the card's Claude session, the grid dropdowns) change card.json: refresh in place, no reload.
   window.__live.on('card', function (d) { if (d === id) refresh(); });
+  window.__live.on('tabs', function (d) { if (d === id) fetchTabs().then(function (list) { renderTabs(list); loadTabContent(); }); });
 })();

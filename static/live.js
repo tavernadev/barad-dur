@@ -3,7 +3,7 @@
 // left requests (saving, page loads) queued forever. Falls back to a single EventSource per page.
 (function () {
   if (window.__live) return;
-  var handlers = {}, EVENTS = ['reload', 'card', 'tasks'];
+  var handlers = {}, EVENTS = ['reload', 'card', 'tasks', 'tabs'];
   function dispatch(ev, data) { (handlers[ev] || []).forEach(function (f) { try { f(data); } catch (_) {} }); }
   window.__live = { on: function (ev, fn) { (handlers[ev] = handlers[ev] || []).push(fn); } };
   if (window.SharedWorker) {

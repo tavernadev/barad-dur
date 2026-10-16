@@ -3,7 +3,7 @@
 // Tasks live in cards/<id>/tasks.json; the card's own Claude session and you both write to them.
 // Clicking a task opens its detail as a card layered over the report (same page, not a popup/dialog).
 (function () {
-  // Inside the shell, the permanent header has the "Home" link, so remove the page's own link back to "/" (and its nav bar
+  // Inside the shell, the permanent header's logo and app name go home, so remove the page's own link back to "/" (and its nav bar
   // when nothing else is left in it). Hand-written reports keep their other nav links.
   if (window.parent !== window) {
     document.querySelectorAll('nav a[href="/"]').forEach(function (a) {
@@ -15,7 +15,7 @@
   if (!id) return;
   var API = '/api/cards/' + encodeURIComponent(id) + '/tasks';
   var DEFAULT_W = 360, MIN_W = 240, KEY = 'workspace.tasksCollapsed', WKEY = 'workspace.tasksWidthPx';
-  var STATUS = ['Pending', 'Scoping', 'In Progress', 'Code Review', 'Testing', 'Done'];
+  var STATUS = ['Pending', 'Scoping', 'In Progress', 'Code Review', 'Testing', 'Done', 'Cancelled'];
   var PRIORITY = ['Low', 'Medium', 'High', 'Urgent'];
   var tasks = [], openId = null, built = false;
 
@@ -54,7 +54,7 @@
     '.tk-chip, #task-card select { --c:#8b949e; font:inherit; font-weight:600; background:color-mix(in srgb, var(--c) 16%, var(--bg,#fff)); color:color-mix(in srgb, var(--c) 70%, var(--fg,#1f2328)); border:1px solid color-mix(in srgb, var(--c) 55%, var(--line,#d1d9e0)); border-radius:999px; }',
     '.tk-chip { padding:0 9px; font-size:12px; }',
     '[data-value="Pending"] { --c:#8b949e; } [data-value="Scoping"] { --c:#a371f7; } [data-value="In Progress"] { --c:#4493f8; }',
-    '[data-value="Code Review"] { --c:#d29922; } [data-value="Testing"] { --c:#f0883e; } [data-value="Done"] { --c:#3fb950; }',
+    '[data-value="Code Review"] { --c:#d29922; } [data-value="Testing"] { --c:#f0883e; } [data-value="Done"] { --c:#3fb950; } [data-value="Cancelled"] { --c:#6e7681; }',
     '[data-value="Low"] { --c:#3fb950; } [data-value="Medium"] { --c:#d29922; } [data-value="High"] { --c:#f0883e; } [data-value="Urgent"] { --c:#f85149; }',
 
     /* the task card: layered over the report, left of the column; not modal, the page stays usable */
@@ -172,7 +172,7 @@
     tasks.forEach(function (t) {
       var li = document.createElement('li');
       li.tabIndex = 0; li.setAttribute('role', 'button'); li.dataset.id = t.id;
-      if (t.status === 'Done') li.className = 'done';
+      if (t.status === 'Done' || t.status === 'Cancelled') li.className = 'done'; // crossed out; the progress count below counts only Done
       if (t.id === openId) li.classList.add('sel');
       var n = document.createElement('span'); n.className = 'n'; n.textContent = '#' + (t.number || t.order); // the permanent task number, not the position
       var title = document.createElement('span'); title.className = 't'; title.textContent = t.title;
