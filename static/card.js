@@ -103,6 +103,18 @@
       tabBody.innerHTML = html.trim() ? html : '<p class="muted">Nothing here yet. Ask this card\'s Claude session to fill it in.</p>';
     }).catch(function () {});
   }
+  var dragId = null;
+  function afterMid(el, e) { var r = el.getBoundingClientRect(); return e.clientX > r.left + r.width / 2; }
+  function clearDrop() { if (tabBar) Array.prototype.forEach.call(tabBar.querySelectorAll('.drop-before, .drop-after'), function (x) { x.classList.remove('drop-before', 'drop-after'); }); }
+  function saveOrder(ids, refocus) {
+    var before = tabs;
+    tabs = ids.map(function (i) { return tabs.filter(function (t) { return t.id === i; })[0]; });
+    renderTabs(tabs);
+    if (refocus && tabBar) { var f = tabBar.querySelector('[data-id="' + refocus + '"]'); if (f) f.focus(); }
+    fetch(API + '/tabs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: ids }) })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); })
+      .catch(function () { say('Could not reorder the tabs', true); renderTabs(before); });
+  }
   function pick(tid) { activeTab = tid; try { localStorage.setItem(TAB_KEY, activeTab); } catch (_) {} renderTabs(tabs); loadTabContent(); }
   function renderTabs(list) {
     tabs = list;
@@ -131,6 +143,32 @@
     tabs.forEach(function (t) {
       var b = mk(t.id, t.title);
       b.addEventListener('click', function () { pick(t.id); });
+      // Reorder: drag a tab onto another one, or press Alt+Left / Alt+Right on the focused tab. Artifact always stays first.
+      b.draggable = true; b.dataset.id = t.id;
+      b.title = 'Drag to reorder, or Alt+Left / Alt+Right';
+      b.addEventListener('dragstart', function (e) { dragId = t.id; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', t.id); } catch (_) {} });
+      b.addEventListener('dragend', function () { dragId = null; clearDrop(); });
+      b.addEventListener('dragover', function (e) {
+        if (!dragId || dragId === t.id) return;
+        e.preventDefault(); clearDrop();
+        b.classList.add(afterMid(b, e) ? 'drop-after' : 'drop-before');
+      });
+      b.addEventListener('drop', function (e) {
+        if (!dragId || dragId === t.id) return;
+        e.preventDefault();
+        var from = dragId, after = afterMid(b, e); dragId = null; clearDrop();
+        var ids = tabs.map(function (x) { return x.id; }).filter(function (i) { return i !== from; });
+        ids.splice(ids.indexOf(t.id) + (after ? 1 : 0), 0, from);
+        saveOrder(ids);
+      });
+      b.addEventListener('keydown', function (e) {
+        if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+        e.preventDefault();
+        var ids = tabs.map(function (x) { return x.id; }), i = ids.indexOf(t.id), j = i + (e.key === 'ArrowLeft' ? -1 : 1);
+        if (j < 0 || j >= ids.length) return;
+        ids.splice(j, 0, ids.splice(i, 1)[0]);
+        saveOrder(ids, t.id);
+      });
       tabBar.appendChild(b);
     });
     var add = document.createElement('button');

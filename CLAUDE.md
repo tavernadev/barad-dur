@@ -74,6 +74,24 @@ Unknown: when A was added to the list.
 Next: read the sync runs for Sep 17-22 (task 1-7).
 ```
 
+### The page is the main output, not the terminal (applies to every card session)
+
+The user reads the card page (the middle) and its TODO column (the right) far more easily than the terminal, so **as we talk,
+write what matters there, in the same turn, without being asked**. The terminal reply is a short pointer, not the record:
+
+- **Decisions, findings, options and recommendations** go into the card's page: the **Findings** tab on a tabbed card (or the
+  tab the user named), `index.html` on an older card. Put the answer first, record each decision with its reason, and keep
+  rejected options in one line so they are not re-discussed. Edit in place rather than appending a log.
+- **Work to do** becomes tasks through the API (see "Tasks"): add a task when we agree on a step, update it as it moves, and
+  write results as task updates. Do not leave next steps only in the terminal.
+- **The starting picture** (what the ticket says, first investigation, open questions) goes in the **Scoping** tab.
+- **In the terminal**, answer in a few lines and say where the detail went ("Recorded in Findings; added tasks 8-1 and 8-2").
+  A long answer in the terminal only is a miss. If the user asks a question, answer it there briefly **and** record anything
+  that will matter later.
+- **Do not overwrite what the user types** in the card's Description and Notes fields (they edit those in the browser); put
+  your material in tabs, the report and tasks. Edit those two fields only when asked.
+- Still follow "Write for a human reader" for everything you write on the page.
+
 ### Card session: do this automatically, without being asked
 
 1. **On start**, read the card's `card.json` and `index.html` and its tasks, then wait for the user's instruction.
@@ -312,6 +330,9 @@ add tabs to an existing card unless the user asks.**
   with `POST /api/cards/<n>/tabs` and `{"title":"..."}`. The response lists the tabs, the new one last; the server creates an
   empty `tabs/<id>.html` (the id is the title in lowercase with dashes) and you write the content into it. The user can also
   press **+** on the page. Tabs are never deleted by an agent.
+- **Reordering:** the user drags a tab onto another one, or presses Alt+Left / Alt+Right on a focused tab; the page saves it with
+  `POST /api/cards/<n>/tabs` and `{"order":["findings","scoping"]}` (every tab id exactly once, else 400). **Artifact always stays first.**
+  Do not reorder tabs yourself unless asked, and keep the user's order when you add a tab (new ones go last).
 - **Format:** an HTML fragment, not a full page: no `<html>`, `<head>` or `<body>`, and no scripts (they will not run).
   The page styles `h2`, `h3`, `p`, `ul`, `ol`, `table`, `code`, `pre` and `<div class="callout">` (add `warn`, `bad` or `good`).
   Follow "Write for a human reader": answer first, short bullets, a table to compare, long evidence further down or in a tab of its

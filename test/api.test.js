@@ -356,6 +356,14 @@ test('tabs: new cards start with Scoping and Findings, more can be added, older 
   assert.equal(r.status, 201);
   assert.deepEqual(r.json.at(-1), { id: 'what-we-are-fixing', title: 'What we are fixing' });
   assert.ok(exists(dir, 'tabs', 'what-we-are-fixing.html'));
+  // reorder: a permutation of the existing ids is saved, anything else is refused
+  const ids = (await call('GET', T)).json.map((t) => t.id);
+  const flipped = [...ids].reverse();
+  assert.deepEqual((await call('POST', T, { order: flipped })).json.map((t) => t.id), flipped);
+  assert.deepEqual((await call('GET', T)).json.map((t) => t.id), flipped, 'order is kept');
+  for (const bad of [{ order: ids.slice(1) }, { order: [...ids, 'nope'] }, { order: [ids[0], ids[0], ...ids.slice(2)] }, { order: 'x' }]) {
+    assert.equal((await call('POST', T, bad)).status, 400, JSON.stringify(bad));
+  }
   r = await call('POST', T, { title: 'What we are fixing' });
   assert.equal(r.json.at(-1).id, 'what-we-are-fixing-2', 'same title gets a distinct tab');
   for (const bad of [{ title: ' ' }, { title: 'x'.repeat(41) }, {}]) assert.equal((await call('POST', T, bad)).status, 400);

@@ -9,7 +9,7 @@
 //   /api/cards/<n>   -> POST status / priority / inbox / ticket / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
 //   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
-//   /api/cards/<n>/tabs  -> GET the card's tabs; GET .../tabs/<id> the tab's HTML; POST {title} adds a tab
+//   /api/cards/<n>/tabs  -> GET the card's tabs; GET .../tabs/<id> the tab's HTML; POST {title} adds a tab, POST {order:[ids]} reorders them
 //   /static/*        -> shared CSS/JS (generated card pages, TODO column, live-update channel)
 //   /events          -> SSE: "reload", "card" (card.json changed) and "tasks" (a task changed)
 // The shell itself is never reloaded automatically, so the terminal keeps running.
@@ -476,6 +476,13 @@ http.createServer((req, res) => {
     if (req.method === 'POST' && !tb[2]) { // add a tab: { "title": "..." }
       if (!guardJson(req, res)) return;
       return readJson(req, res, (d) => {
+        if (d.order !== undefined) { // reorder: { "order": ["findings", "scoping", ...] } must list every existing tab id exactly once
+          const tabs = readTabs(card.dir), ids = Array.isArray(d.order) ? d.order : [];
+          if (ids.length !== tabs.length || new Set(ids).size !== ids.length || !ids.every((i) => tabs.some((t) => t.id === i))) return send(res, 400, 'Order must list every tab once');
+          const sorted = ids.map((i) => tabs.find((t) => t.id === i));
+          fs.writeFileSync(path.join(card.dir, 'tabs.json'), JSON.stringify(sorted, null, 2) + '\n');
+          return send(res, 200, JSON.stringify(sorted), TYPES['.json']);
+        }
         const title = typeof d.title === 'string' ? d.title.trim() : '';
         if (!title || title.length > 40) return send(res, 400, 'Invalid title');
         send(res, 201, JSON.stringify(addTab(card.dir, title)), TYPES['.json']);
