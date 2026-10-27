@@ -245,6 +245,71 @@
     slot.appendChild(btn);
   }
 
+  // ---------- optional document links: a Notion doc and a Linear project, each its own tile only when the card has one ----------
+  var DOCS = [
+    { field: 'notion', title: 'Notion doc', add: '+ Notion doc', hint: 'https://www.notion.so/...' },
+    { field: 'project', title: 'Linear project', add: '+ Linear project', hint: 'https://linear.app/.../project/...' }
+  ];
+  var docEditing = null, docAddRow = null;
+  function docLabel(url, fallback) { // a readable name from the link: the last path part without its trailing id
+    try {
+      var seg = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '');
+      seg = seg.replace(/-[0-9a-f]{12,32}$/i, '').replace(/[-_]+/g, ' ').trim();
+      return seg || fallback;
+    } catch (_) { return fallback; }
+  }
+  function editDoc(d, current, anchor) {
+    var input = document.createElement('input');
+    input.className = 'tk-input'; input.style.width = '22em'; input.placeholder = d.hint; input.value = current || '';
+    input.setAttribute('aria-label', d.title + ' link');
+    anchor.textContent = ''; anchor.appendChild(input); input.focus(); input.select();
+    docEditing = d.field;
+    var done = false;
+    var finish = function (commit) {
+      if (done) return; done = true; docEditing = null;
+      var v = input.value.trim();
+      if (!commit || v === (current || '')) { renderDocs(card); return; }
+      var b = {}; b[d.field] = v;
+      save(b).then(function (c2) {
+        if (c2) renderDocs(c2); else { say('Not a valid ' + d.title + ' link', true); renderDocs(card); }
+      });
+    };
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); });
+    input.addEventListener('blur', function () { finish(true); });
+  }
+  function renderDocs(c) {
+    var meta = document.querySelector('.meta');
+    if (!meta || docEditing) return; // being edited: leave it alone
+    Array.prototype.forEach.call(meta.querySelectorAll('.doc-tile'), function (t) { t.remove(); });
+    if (docAddRow) { docAddRow.remove(); docAddRow = null; }
+    var missing = [];
+    DOCS.forEach(function (d) {
+      var url = c[d.field];
+      if (!url) { missing.push(d); return; }
+      var tile = document.createElement('div'); tile.className = 'doc-tile';
+      tile.innerHTML = '<b></b><span class="tk-slot"></span>';
+      tile.querySelector('b').textContent = d.title;
+      var slot = tile.querySelector('.tk-slot');
+      var a = document.createElement('a'); a.className = 'doc-link'; a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = docLabel(url, d.title); a.title = url;
+      var pencil = document.createElement('button');
+      pencil.type = 'button'; pencil.className = 'tk-edit'; pencil.textContent = '\u270e';
+      pencil.title = 'Change link (empty removes it)'; pencil.setAttribute('aria-label', 'Change ' + d.title + ' link');
+      pencil.addEventListener('click', function () { editDoc(d, url, slot); });
+      slot.appendChild(a); slot.appendChild(pencil);
+      meta.appendChild(tile);
+    });
+    if (missing.length) { // links the card does not have yet: small chips under the tiles, so cards without them stay uncluttered
+      docAddRow = document.createElement('div'); docAddRow.className = 'doc-add';
+      missing.forEach(function (d) {
+        var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'tk'; btn.textContent = d.add;
+        btn.addEventListener('click', function () { editDoc(d, '', docAddRow); });
+        docAddRow.appendChild(btn);
+      });
+      meta.parentNode.insertBefore(docAddRow, meta.nextSibling);
+    }
+  }
+
   // ---------- dropdowns ----------
   function buildSelects(options) {
     selects.forEach(function (sel) {
@@ -271,6 +336,7 @@
       if (document.activeElement !== el) { el.value = last[name]; grow(el); }
     });
     renderTicket(c);
+    renderDocs(c);
     selects.forEach(function (sel) {
       if (document.activeElement === sel) return;
       var v = c[sel.dataset.field];

@@ -6,7 +6,7 @@
 //   /content/<n>/*   -> files of card n (HTML gets the live-reload snippet; the report also gets the TODO column)
 //   /api/config      -> public settings (app name, terminal port, Linear base URL)
 //   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description)
-//   /api/cards/<n>   -> POST status / priority / inbox / ticket / title / description / notes changes
+//   /api/cards/<n>   -> POST status / priority / inbox / ticket / notion / project / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
 //   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
 //   /api/cards/<n>/tabs  -> GET the card's tabs; GET .../tabs/<id> the tab's HTML; POST {title} adds a tab, POST {order:[ids]} reorders them
@@ -137,8 +137,8 @@ function addTab(dir, title) {
 }
 
 // ---- artifact: an optional claude.ai artifact attached to a card, shown as the first tab ("Artifact"; greyed out while there is none).
-// artifact.json = { url, title, savedAt } and the saved copy of the page is artifact/index.html. Nothing creates or attaches one
-// automatically: a card session does it only when the user asks. The saved page is untrusted data and is rendered sandboxed.
+// artifact.json = { url, title, savedAt } and the saved copy of the page is artifact/index.html. The server never creates one;
+// a card session publishes and attaches it in the same turn, only when the user asks for an artifact. The saved page is untrusted data and is rendered sandboxed.
 const ARTIFACT_URL = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+(?:\?[A-Za-z0-9_=&.-]*)?$/;
 const MAX_ARTIFACT = 6 * 1024 * 1024;
 function readArtifact(dir) {
@@ -165,6 +165,18 @@ function convertLegacyTasks(cardDir, cardId) {
 
 // Editable card fields and their allowed values (shared with the UI via /api/options).
 // Statuses that must carry a reason, and the card.json field that holds it.
+// Optional document links on a card, each shown as its own tile on the card page. Empty string removes the link.
+const LINK_FIELDS = {
+  notion: { hosts: /(^|\.)notion\.(so|site|com)$/i, path: null }, // a Notion doc: https://www.notion.so/..., https://app.notion.com/p/...
+  project: { hosts: /^(www\.)?linear\.app$/i, path: /\/project\// } // a Linear project: https://linear.app/<workspace>/project/...
+};
+const linkOk = (f, v) => {
+  if (typeof v !== 'string') return false;
+  if (v.trim() === '') return true;
+  let u; try { u = new URL(v.trim()); } catch { return false; }
+  const spec = LINK_FIELDS[f];
+  return v.trim().length <= 500 && u.protocol === 'https:' && spec.hosts.test(u.hostname) && (!spec.path || spec.path.test(u.pathname));
+};
 const REASON_FIELD = { Blocked: 'blockedReason', Cancelled: 'cancelledReason' };
 const OPTIONS = {
   status: ['Pending', 'Scoping', 'In Progress', 'Blocked', 'Code Review', 'Testing', 'Done', 'Cancelled'],
@@ -542,7 +554,7 @@ http.createServer((req, res) => {
       const fields = Object.keys(changes);
       const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
       const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : v.length <= (f === 'notes' ? 20000 : 4000));
-      const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || (f === 'inbox' && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f]))
+      const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || (f === 'inbox' && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f])) || (LINK_FIELDS[f] && linkOk(f, changes[f]))
         || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]))
         || (Object.values(REASON_FIELD).includes(f) && typeof changes[f] === 'string' && changes[f].trim() !== '' && changes[f].trim().length <= 1000);
       if (!fields.length || !fields.every(valid)) return send(res, 400, 'Unknown field or value');
@@ -557,6 +569,7 @@ http.createServer((req, res) => {
       fields.forEach((f) => {
         if (f === 'inbox') return; // not stored: it is where the folder lives
         if (f === 'title' || f === 'description' || Object.values(REASON_FIELD).includes(f)) meta[f] = changes[f].trim();
+        else if (LINK_FIELDS[f]) { if (changes[f].trim()) meta[f] = changes[f].trim(); else delete meta[f]; }
         else if (f !== 'ticket') meta[f] = changes[f];
         else if (changes[f].trim()) meta.ticket = changes[f].trim().toUpperCase(); // Linear key, e.g. ABC-123
         else delete meta.ticket;

@@ -138,6 +138,16 @@ test('card fields: dropdowns, ticket, text', async () => {
   assert.equal((await call('POST', U, { ticket: '' })).json.ticket, undefined);
   const t = (await call('POST', U, { title: '  New  ', description: ' d ', notes: 'a\nb ' })).json;
   assert.deepEqual([t.title, t.description, t.notes], ['New', 'd', 'a\nb ']);
+  // optional document links: a Notion doc and a Linear project, https only, on the right hosts; empty removes
+  const notion = 'https://app.notion.com/p/team/RFC-Thing-3d180a6931918030b6a8ffcc697ec4b3';
+  assert.equal((await call('POST', U, { notion: ` ${notion} `, project: 'https://linear.app/ws/project/my-project-abc123' })).json.notion, notion);
+  assert.equal((await call('GET', '/api/cards')).json.find((c) => c.number === 1).project, 'https://linear.app/ws/project/my-project-abc123');
+  const cleared = (await call('POST', U, { notion: '', project: '' })).json;
+  assert.deepEqual([cleared.notion, cleared.project], [undefined, undefined]);
+  for (const bad of [{ notion: 'http://www.notion.so/x' }, { notion: 'https://evil.example/notion.so' }, { notion: 'javascript:alert(1)' }, { notion: 5 },
+    { project: 'https://linear.app/ws/issue/ABC-1' }, { project: 'https://example.com/project/x' }, { notion: 'https://www.notion.so/' + 'x'.repeat(500) }]) {
+    assert.equal((await call('POST', U, bad)).status, 400, JSON.stringify(bad));
+  }
   for (const bad of [{ status: 'Nope' }, { priority: 'Nope' }, { inbox: 'yes' }, { ticket: 'not a key' }, { title: ' ' }, { notes: 5 }, { nope: 1 }]) {
     assert.equal((await call('POST', U, bad)).status, 400, JSON.stringify(bad));
   }
@@ -316,6 +326,8 @@ test('card-terminal.sh: starts a card session, resumes it, and resumes an adopte
   r = run('8');
   assert.match(r.stdout, /Its folder is .*topics\/done\/8/, 'a done card is found in done/');
   assert.match(r.stdout, /This card has tabs: .*tabs\/scoping\.html.*tabs\/findings\.html.*POST .*\/api\/cards\/8\/tabs/, 'a tabbed card tells its session where to write');
+  assert.match(r.stdout, /do not create an artifact unless the user asks; when the user asks for one, publish it and attach it to this card in the same turn/, 'artifacts are created and attached together');
+  assert.doesNotMatch(r.stdout, /on your own/, 'the old "never attach" wording is gone');
   assert.doesNotMatch(run('7').stdout, /This card has tabs/, 'a card without tabs.json gets no tab instructions');
 
   // adopt an existing session started somewhere else: resume it from that directory
@@ -402,7 +414,7 @@ test('terminal.sh ends a session when its tab closes (ttyd close signal), and tt
   assert.notEqual(spawnSync('ttyd', ['-s', 'NOPE', '--version'], { encoding: 'utf8' }).status, 0, 'and rejects a bogus signal name');
 });
 
-test('artifact: optional, never created automatically, attached only on request, rendered sandboxed', async () => {
+test('artifact: optional, never created by the server, attached through the API, rendered sandboxed', async () => {
   const { call, data, watchers, events } = boot();
   const card = (await call('POST', '/api/cards', { title: 'With artifact' })).json; // #2, a new tabbed card
   const A = `/api/cards/${card.id}/artifact`;

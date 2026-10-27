@@ -46,6 +46,11 @@ textarea.notes { min-height:8em; }
 .toast.show { opacity:1; transform:none; }
 .toast.bad { border-color:#f85149; color:#f85149; }
 
+/* optional link tiles (Notion doc, Linear project) */
+.meta .doc-link { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; font-size:14px; font-weight:600; color:var(--accent); text-decoration:none; margin-top:2px; }
+.meta .doc-link:hover { text-decoration:underline; }
+.meta .doc-tile .tk-slot { display:flex; align-items:center; gap:6px; min-width:0; }
+.doc-add { display:flex; gap:8px; margin:-14px 0 18px; flex-wrap:wrap; }
 /* Linear ticket chip, same look as on the main page */
 .tk { font:inherit; font-size:12px; border:1px dashed var(--line); background:none; color:var(--muted); border-radius:999px; padding:1px 9px; cursor:pointer; margin-top:2px; }
 .tk:hover { border-color:var(--accent); color:var(--accent); }
