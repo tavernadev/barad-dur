@@ -85,7 +85,7 @@ write what matters there, in the same turn, without being asked**. The terminal 
   rejected options in one line so they are not re-discussed. Edit in place rather than appending a log.
 - **Work to do** becomes tasks through the API (see "Tasks"): add a task when we agree on a step, update it as it moves, and
   write results as task updates. Do not leave next steps only in the terminal.
-- **The starting picture** (what the ticket says, first investigation, open questions) goes in the **Scoping** tab.
+- **The scope** (the problem explained in friendly words, from the description, the ticket and its project, with open questions) goes in the **Scoping** tab. **How it works and why it happened** goes in **Findings**. Add a diagram when it makes either clearer.
 - **In the terminal**, answer in a few lines and say where the detail went ("Recorded in Findings; added tasks 8-1 and 8-2").
   A long answer in the terminal only is a miss. If the user asks a question, answer it there briefly **and** record anything
   that will matter later.
@@ -312,6 +312,12 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   In Progress and Scoping on. Done and Cancelled apply to both columns; In Progress and Scoping apply to the Topics grid only;
   Pending, Blocked, Code Review and Testing are always shown. Hidden cards are only hidden, never moved. The cards' "Updated
   <date>" line stays: the user asked to keep it.
+- **Card templates:** the card titled **Templates** (find it by title in `card.json`) holds ready-made templates, one tab each (for example
+  "Code review template"). When the user asks for a card "from a template" or names one ("create a code review card for <link>"), read that
+  tab, create the card with the fields it lists (title, place, status, ticket), fill the blanks from what the user gave and from the source
+  (for example `gh pr view` for a pull request), and put the template's description text in the card's description. Ask only for details you
+  cannot find. When the user asks to add or change a template, edit that card's tabs (add a tab with `POST /api/cards/<n>/tabs`). Keep the
+  templates generic: no real names, tickets or links.
 - **Topics:** cards being worked on. A hand-made Topics card needs `topics/<n>/card.json` (with `number` equal to the
   folder name) and an `index.html`; use the next free number from `.counter` (or create it in the Inbox and move it).
 - **Identifiers:** every card has a workspace `number` (`#1`, `#2`, ...), also its folder name; see "Where things
@@ -332,13 +338,14 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
     the card keeps that status. Moving to any other status removes the reason. When you block or cancel a card yourself, say why.
   - priority: Low, Medium, High, Urgent (unset is allowed, shown as "Not set")
 - **Document links (optional, each its own tile):** `notion` (a Notion doc, `https://` on a notion.so, notion.site or notion.com host)
-  and `project` (a Linear project, `https://linear.app/.../project/...`) in `card.json`. A card page shows a tile for each one it has
-  (the link text is the doc's name, a pencil changes or clears it) and small "+ Notion doc" / "+ Linear project" chips for the ones it
-  lacks, so most cards show no extra tiles. Set them with `POST /api/cards/<n>` and `{"notion":"<url>"}` or `{"project":"<url>"}`
+  `project` (a Linear project, `https://linear.app/.../project/...`) and `pr` (a GitHub pull request, `https://github.com/<org>/<repo>/pull/<n>`,
+  shown as `<repo> #<n>`) in `card.json`. A card page shows a tile for each one it has
+  (the link text is the doc's name, a pencil changes or clears it) and small "+ Notion doc" / "+ Linear project" / "+ Pull request" chips for the ones it
+  lacks, so most cards show no extra tiles. Set them with `POST /api/cards/<n>` and `{"notion":"<url>"}`, `{"project":"<url>"}` or `{"pr":"<url>"}`
   (empty string removes; anything else is a 400). **When a card has such a link, put it in the field** instead of only in the
   description or notes, and keep a card's own Description and Notes as the user wrote them. A Linear ticket stays in `ticket`.
 - Change a card with `POST /api/cards/<n>`, `Content-Type: application/json`, a body like `{"status":"Testing"}`
-  (accepts `status`, `blockedReason`, `cancelledReason`, `priority`, `inbox`, `ticket`, `notion`, `project`, `title`, `description`, `notes`). The API keeps `updated` current and
+  (accepts `status`, `blockedReason`, `cancelledReason`, `priority`, `inbox`, `ticket`, `notion`, `project`, `pr`, `title`, `description`, `notes`). The API keeps `updated` current and
   moves the folder when `status` becomes or stops being Done, or `inbox` changes. The user may have changed things
   in the browser, so re-read `card.json` before editing it and never revert their changes.
 - **Generated (Inbox) cards are editable in the browser:** the title, description and notes are inputs that save
@@ -355,10 +362,20 @@ while the content scrolls. Every active generated card has them: when tabs were 
 cards that were not Done or Cancelled (see "Layout changes reach every active card"). Hand-written reports (like card #1) keep their
 single page; do not convert one unless the user asks. Done and Cancelled cards are never touched.
 
-- **Scoping** (`tabs/scoping.html`): everything from the initial investigation of the ticket: what it says, what was found when
-  first reading it, the people and systems involved, open questions. It is the starting picture and changes little.
-- **Findings** (`tabs/findings.html`): what we actually identified after working on the tasks: results, root cause, evidence,
-  decisions. Update it as tasks produce results; keep the answer at the top.
+- **Scoping** (`tabs/scoping.html`): **explains the problem**, in a friendly, human-readable way. It is the longer, expanded version
+  of the card description plus everything the card links to (the ticket, its project, a doc, a thread), summarized so a reader who
+  has seen none of them understands the scope: what is wrong, who or what it affects, why it matters, what is asked, what is in and
+  out of scope, and the open questions. Plain words, short sections, a diagram when it helps. It does **not** hold investigation
+  results. It is the starting picture and changes little (update it only when the scope itself changes).
+- **Findings** (`tabs/findings.html`): **how it actually works and how it happened**. What the investigation showed: the mechanism,
+  the root cause, evidence (logs, queries, code read, with where each came from), what was ruled out, and decisions. Update it as
+  tasks produce results; keep the answer at the top. If it is a fact you found out, it belongs here, not in Scoping.
+- **Use diagrams where they help.** Whenever a flow, a sequence, a comparison or a cause and effect can be drawn, add a small
+  diagram to the explanation (in Scoping or Findings) instead of describing it only in words. Good shape: boxes for the actors or
+  steps (colour a failing step red and a healthy one green), arrows for the flow, a short label on each arrow, and one plain
+  sentence under the diagram saying what to take from it. Draw it as **inline SVG** (no scripts), colored through `style` attributes that use the page's CSS
+  variables (for example `style="fill:var(--card);stroke:var(--line)"` on boxes and `style="fill:var(--fg)"` on text; presentation
+  attributes like `fill="var(--card)"` do not take variables) so it reads in light and dark, and give the `<svg>` a `viewBox` so it scales. Keep each diagram to one idea, and keep the real numbers and names out of this public file's examples.
 - **More tabs:** when the user asks for another one (for example "what we are fixing", "changes to review", "plan"), create it
   with `POST /api/cards/<n>/tabs` and `{"title":"..."}`. The response lists the tabs, the new one last; the server creates an
   empty `tabs/<id>.html` (the id is the title in lowercase with dashes) and you write the content into it. The user can also

@@ -245,10 +245,12 @@
     slot.appendChild(btn);
   }
 
-  // ---------- optional document links: a Notion doc and a Linear project, each its own tile only when the card has one ----------
+  // ---------- optional document links: a Notion doc, a Linear project and a pull request, each its own tile only when the card has one ----------
   var DOCS = [
     { field: 'notion', title: 'Notion doc', add: '+ Notion doc', hint: 'https://www.notion.so/...' },
-    { field: 'project', title: 'Linear project', add: '+ Linear project', hint: 'https://linear.app/.../project/...' }
+    { field: 'project', title: 'Linear project', add: '+ Linear project', hint: 'https://linear.app/.../project/...' },
+    { field: 'pr', title: 'Pull request', add: '+ Pull request', hint: 'https://github.com/<org>/<repo>/pull/123',
+      label: function (url) { var m = url.match(/\/([^/]+)\/pull\/(\d+)/); return m ? m[1] + ' #' + m[2] : 'Pull request'; } }
   ];
   var docEditing = null, docAddRow = null;
   function docLabel(url, fallback) { // a readable name from the link: the last path part without its trailing id
@@ -291,7 +293,7 @@
       tile.querySelector('b').textContent = d.title;
       var slot = tile.querySelector('.tk-slot');
       var a = document.createElement('a'); a.className = 'doc-link'; a.href = url; a.target = '_blank'; a.rel = 'noopener';
-      a.textContent = docLabel(url, d.title); a.title = url;
+      a.textContent = d.label ? d.label(url) : docLabel(url, d.title); a.title = url;
       var pencil = document.createElement('button');
       pencil.type = 'button'; pencil.className = 'tk-edit'; pencil.textContent = '\u270e';
       pencil.title = 'Change link (empty removes it)'; pencil.setAttribute('aria-label', 'Change ' + d.title + ' link');

@@ -142,10 +142,12 @@ test('card fields: dropdowns, ticket, text', async () => {
   const notion = 'https://app.notion.com/p/team/RFC-Thing-3d180a6931918030b6a8ffcc697ec4b3';
   assert.equal((await call('POST', U, { notion: ` ${notion} `, project: 'https://linear.app/ws/project/my-project-abc123' })).json.notion, notion);
   assert.equal((await call('GET', '/api/cards')).json.find((c) => c.number === 1).project, 'https://linear.app/ws/project/my-project-abc123');
-  const cleared = (await call('POST', U, { notion: '', project: '' })).json;
-  assert.deepEqual([cleared.notion, cleared.project], [undefined, undefined]);
+  const pr = 'https://github.com/example-org/my-service/pull/12';
+  assert.equal((await call('POST', U, { pr: ` ${pr} ` })).json.pr, pr);
+  const cleared = (await call('POST', U, { notion: '', project: '', pr: '' })).json;
+  assert.deepEqual([cleared.notion, cleared.project, cleared.pr], [undefined, undefined, undefined]);
   for (const bad of [{ notion: 'http://www.notion.so/x' }, { notion: 'https://evil.example/notion.so' }, { notion: 'javascript:alert(1)' }, { notion: 5 },
-    { project: 'https://linear.app/ws/issue/ABC-1' }, { project: 'https://example.com/project/x' }, { notion: 'https://www.notion.so/' + 'x'.repeat(500) }]) {
+    { project: 'https://linear.app/ws/issue/ABC-1' }, { project: 'https://example.com/project/x' }, { pr: 'https://github.com/example-org/my-service/issues/12' }, { pr: 'https://gitlab.com/example-org/my-service/pull/12' }, { pr: 'http://github.com/example-org/my-service/pull/12' }, { notion: 'https://www.notion.so/' + 'x'.repeat(500) }]) {
     assert.equal((await call('POST', U, bad)).status, 400, JSON.stringify(bad));
   }
   for (const bad of [{ status: 'Nope' }, { priority: 'Nope' }, { inbox: 'yes' }, { ticket: 'not a key' }, { title: ' ' }, { notes: 5 }, { nope: 1 }]) {

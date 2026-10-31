@@ -76,6 +76,9 @@ a.ticket:hover { background:color-mix(in srgb, var(--accent) 14%, var(--bg)); }
 .tab-body h2 { font-size:20px; margin:28px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
 .tab-body h3 { font-size:16px; margin:20px 0 8px; }
 .tab-body h2:first-child, .tab-body h3:first-child { margin-top:0; }
+.tab-body svg { max-width:100%; height:auto; display:block; margin:14px 0; }
+.tab-body figure { margin:14px 0; }
+.tab-body figcaption { color:var(--muted); font-size:14px; margin-top:6px; }
 .tab-body table { border-collapse:collapse; width:100%; margin:12px 0; font-size:15px; }
 .tab-body th, .tab-body td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
 .tab-body th { background:var(--card); }

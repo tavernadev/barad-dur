@@ -6,7 +6,7 @@
 //   /content/<n>/*   -> files of card n (HTML gets the live-reload snippet; the report also gets the TODO column)
 //   /api/config      -> public settings (app name, terminal port, Linear base URL)
 //   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description)
-//   /api/cards/<n>   -> POST status / priority / inbox / ticket / notion / project / title / description / notes changes
+//   /api/cards/<n>   -> POST status / priority / inbox / ticket / notion / project / pr / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
 //   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
 //   /api/cards/<n>/tabs  -> GET the card's tabs; GET .../tabs/<id> the tab's HTML; POST {title} adds a tab, POST {order:[ids]} reorders them
@@ -168,7 +168,8 @@ function convertLegacyTasks(cardDir, cardId) {
 // Optional document links on a card, each shown as its own tile on the card page. Empty string removes the link.
 const LINK_FIELDS = {
   notion: { hosts: /(^|\.)notion\.(so|site|com)$/i, path: null }, // a Notion doc: https://www.notion.so/..., https://app.notion.com/p/...
-  project: { hosts: /^(www\.)?linear\.app$/i, path: /\/project\// } // a Linear project: https://linear.app/<workspace>/project/...
+  project: { hosts: /^(www\.)?linear\.app$/i, path: /\/project\// }, // a Linear project: https://linear.app/<workspace>/project/...
+  pr: { hosts: /^(www\.)?github\.com$/i, path: /^\/[^/]+\/[^/]+\/pull\/\d+/ } // a GitHub pull request: https://github.com/<org>/<repo>/pull/<n>
 };
 const linkOk = (f, v) => {
   if (typeof v !== 'string') return false;
