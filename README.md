@@ -43,6 +43,8 @@ All settings are environment variables; a local `.env` is loaded if present (see
 | `DATA_DIR` | `data` | Where your private data lives (`inbox/`, `topics/`, `.sessions/`, `.counter`): a folder inside the repo (relative to the repo folder) or a full path like `/home/you/barad-dur-data` or `~/barad-dur-data` |
 | `LINEAR_BASE_URL` | empty | Ticket links, e.g. `https://linear.app/<workspace>/issue/` |
 | `CLAUDE_BIN` | `claude` | Claude Code executable |
+| `GH_BIN` | `gh` | GitHub CLI, used by card templates to read a pull request (read-only) |
+| `CODE_BIN` | `code` | VS Code command, run by the header's Settings > Open in VS Code |
 | `OPEN_BROWSER` | `1` | Open the browser on `npm start` |
 
 ## How it is organized
@@ -50,6 +52,8 @@ All settings are environment variables; a local `.env` is loaded if present (see
 The main page has two columns: the **Inbox** (cards awaiting a decision on whether they will be worked on) and
 **Topics** (cards you are working on). Move a card from the Inbox to Topics with its button or by dragging it. Every
 card can have **tasks** (the TODO column on its page) and, for new cards, **tabs** in the content area (an optional Artifact tab that shows an attached claude.ai artifact, Scoping, Findings, and any you add with +), and each card gets its own Claude session in its own tab.
+
+**Card templates** save retyping the same card. The Inbox **+** dialog has a **Template** picker (default: none). The shipped **Code review** template asks for a GitHub pull request link only: the title, size, draft flag and ticket key are read from the pull request with the GitHub CLI (`gh`, read-only), and the card gets the review instructions as its description. The dialog also has an optional **Extra instructions** box (they are added to the card's description, so its Claude session follows them, for example "also look closely at the migrations") and a **Create in Topics** checkbox to skip the Inbox. Cards made from the Code review template also get a **task progress bar** (under the TODO title and in the card page, between the tiles and the description), so you can watch the review advance as its tasks are marked Done; other cards are unaffected. If `gh` is missing or not signed in, the card is still created with the link and a short warning. Templates are plain files in `data/templates/<id>/template.json` (gitignored; its `defaults` section is the place for anything specific to your team, such as the name of your own review skill; the default one is copied there once from `examples/templates/` and your edits are never overwritten), and `GET /api/templates` lists them.
 
 ## Your data stays out of git
 
@@ -61,6 +65,7 @@ and the docs are committed.
 data/
   inbox/<n>/             a card awaiting a decision (n = the card's number; no name or date in folder names)
   topics/<n>/            a card being worked on
+  templates/<id>/        a card template (template.json); the default Code review one is copied here on first run
   inbox/done/, topics/done/   finished cards, so the active folders only hold pending or working ones
     <card>/tasks/<n>-<k>/     one folder per task (card number - task number); tasks/done/ for finished tasks
   .sessions/<n>          Claude session id of each card;  .counter  last card number handed out

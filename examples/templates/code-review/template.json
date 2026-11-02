@@ -1,0 +1,19 @@
+{
+  "name": "Code review",
+  "title": "Code review: {{repo}} PR {{number}} ({{short_title}})",
+  "place": "Inbox",
+  "status": "Code Review",
+  "progress": true,
+  "blanks": [
+    {
+      "key": "pr",
+      "label": "Pull request link",
+      "hint": "https://github.com/<org>/<repo>/pull/123",
+      "kind": "github-pr"
+    }
+  ],
+  "defaults": {
+    "review_skill": "your code review skill"
+  },
+  "description": "Code review of {{repo}} PR #{{number}} ({{ticket}}, \"{{title}}\", {{files}} files, +{{added}} -{{removed}}, {{draft}}): {{pr}}\n\nHow to review (use {{review_skill}}):\nIf that skill is not available in this session, say so and ask me before using a different one.\n1. Read the PR diff and the ticket. Read the repo on fresh origin/main (fetch, then git show / git grep), inside the existing repo folder and without making any copy.\n2. Bugs and regressions: look for new bugs or issues, and for behavior that changes for existing callers.\n3. Scope: check the PR does only what the ticket asks. List anything extra, and anything the ticket asks for that is missing.\n4. Cross-service impact: check whether the change affects other services (callers, events, shared contracts or data). Use the code and the logs as evidence.\n5. Risk analysis: give a risk level with a level of confidence, and say which parts rest on code evidence and which on log evidence.\n6. Recommendation: end with a clear verdict on whether to approve or not, with the reasons.\n7. Comments: write every review comment needed, including inline ones (file and line), in the Findings tab. Do not post anything to GitHub unless I ask."
+}

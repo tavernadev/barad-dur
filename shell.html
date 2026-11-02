@@ -19,7 +19,14 @@
   #bar .left { display:flex; align-items:center; gap:6px; }
   #brand { display:flex; align-items:center; gap:8px; padding:5px 8px; }
   #brand img { width:22px; height:22px; display:block; }
-  #bar .menu { display:flex; align-items:center; gap:4px; }
+  #bar .menu { display:flex; align-items:center; gap:4px; position:relative; }
+  #settings-pop { position:absolute; top:calc(100% + 8px); right:0; min-width:230px; z-index:50; padding:6px; background:#161b22; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.45); }
+  #settings-pop[hidden] { display:none; }
+  #settings-pop .item { display:flex; align-items:center; gap:8px; width:100%; padding:8px 10px; text-align:left; font-weight:500; }
+  #settings-pop .item svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+  #settings-pop .note { padding:2px 10px 6px 34px; font-size:12px; font-weight:500; color:#8b949e; min-height:0; }
+  #settings-pop .note:empty { display:none; }
+  #settings-pop .note.bad { color:#f85149; }
   .icon-btn { width:34px; height:34px; display:flex; align-items:center; justify-content:center; padding:0; }
   .icon-btn svg { width:20px; height:20px; display:block; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
   #split { display:flex; flex:1 1 0; min-height:0; width:100%; }
@@ -39,10 +46,17 @@
     <button id="brand" type="button" title="Main page"><img src="/static/favicon.png" alt=""><span id="brand-name">Barad-dûr</span></button>
   </div>
   <nav class="menu" aria-label="Menu">
-    <!-- Settings: nothing behind it yet -->
-    <button id="settings" class="icon-btn" type="button" aria-label="Settings" title="Settings">
+    <!-- Settings: a small menu (today: Open in VS Code) -->
+    <button id="settings" class="icon-btn" type="button" aria-label="Settings" title="Settings" aria-haspopup="menu" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
+    <div id="settings-pop" hidden role="menu" aria-label="Settings">
+      <button id="open-vscode" class="item" type="button" role="menuitem">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>Open in VS Code</span>
+      </button>
+      <div id="settings-note" class="note" role="status"></div>
+    </div>
   </nav>
 </header>
 <div id="split">
@@ -105,6 +119,26 @@
     if (fresh) w.location.href = path;
     w.focus();
   }
+  // Settings menu. "Open in VS Code" asks the server to run `code` on this project's folder (the server owns the command and the folder).
+  const settingsBtn = document.getElementById('settings'), pop = document.getElementById('settings-pop');
+  const note = document.getElementById('settings-note'), vscodeBtn = document.getElementById('open-vscode');
+  const closePop = () => { pop.hidden = true; settingsBtn.setAttribute('aria-expanded', 'false'); };
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pop.hidden = !pop.hidden; settingsBtn.setAttribute('aria-expanded', String(!pop.hidden));
+    if (!pop.hidden) { note.textContent = ''; note.classList.remove('bad'); vscodeBtn.focus(); }
+  });
+  document.addEventListener('click', (e) => { if (!pop.hidden && !pop.contains(e.target)) closePop(); });
+  window.addEventListener('blur', closePop); // a click inside the content or terminal frame moves focus there
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { closePop(); settingsBtn.focus(); } });
+  vscodeBtn.addEventListener('click', () => {
+    vscodeBtn.disabled = true; note.classList.remove('bad'); note.textContent = 'Opening...';
+    fetch('/api/open-vscode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then((r) => r.json().catch(() => ({})).then((j) => { if (!r.ok) throw new Error(j.error || 'Could not open VS Code'); return j; }))
+      .then(() => { note.textContent = 'Opened in VS Code'; setTimeout(closePop, 1200); })
+      .catch((err) => { note.classList.add('bad'); note.textContent = err.message; })
+      .finally(() => { vscodeBtn.disabled = false; });
+  });
   window.addEventListener('popstate', () => show(location.pathname));
   show(location.pathname);
 

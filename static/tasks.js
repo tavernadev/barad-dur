@@ -27,6 +27,16 @@
     '#tasks-col *, #task-card * { box-sizing:border-box; }',
     '#tasks-col { position:fixed; top:0; right:0; bottom:0; width:var(--tw,' + DEFAULT_W + 'px); z-index:20; overflow:auto; padding:16px; background:var(--card,#f6f8fa); border-left:1px solid var(--line,#d1d9e0); }',
     '#tasks-col h2 { all:unset; display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:700; letter-spacing:.08em; margin-bottom:12px; }',
+    // task progress bar: only on cards flagged taskProgress (built from a template that asks for it)
+    '#tasks-col .td-bar { height:6px; margin:-4px 0 12px; border-radius:999px; background:var(--line,#d1d9e0); overflow:hidden; }',
+    '#tasks-col .td-bar i { display:block; height:100%; width:0; background:var(--accent,#0969da); transition:width .4s ease; }',
+    '#tasks-col .td-bar.full i { background:#3fb950; }',
+    // the same bar in the card page, between the tiles and the Description
+    '#td-pagebar { display:flex; align-items:center; gap:12px; margin:4px 0 22px; font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; color:var(--muted,#59636e); }',
+    '#td-pagebar .track { flex:1; height:8px; border-radius:999px; background:var(--line,#d1d9e0); overflow:hidden; }',
+    '#td-pagebar .track i { display:block; height:100%; width:0; background:var(--accent,#0969da); transition:width .4s ease; }',
+    '#td-pagebar.full .track i { background:#3fb950; }',
+    '#td-pagebar.full .lbl { color:#3fb950; }',
     '#tasks-col .count, .muted { color:var(--muted,#59636e); font-weight:600; letter-spacing:0; }',
     '#tasks-col .err { color:#f85149; font-size:12px; margin-bottom:8px; }',
     '#tasks-col ul { list-style:none; margin:0 0 12px; padding:0; display:flex; flex-direction:column; gap:6px; }',
@@ -99,7 +109,7 @@
   var col = document.createElement('aside');
   col.id = 'tasks-col';
   col.setAttribute('aria-label', 'TODO');
-  col.innerHTML = '<h2><span>TODO</span><span class="count"></span></h2><div class="err" hidden></div>' +
+  col.innerHTML = '<h2><span>TODO</span><span class="count"></span></h2><div class="td-bar" hidden><i></i></div><div class="err" hidden></div>' +
     '<div class="empty" hidden>No tasks yet. This card\'s Claude session adds them here as it works.</div><ul></ul>' +
     '<form autocomplete="off"><input placeholder="Add a task" maxlength="300" aria-label="Add a task"></form>';
   var gutter = document.createElement('div');
@@ -111,7 +121,7 @@
   card.id = 'task-card'; card.hidden = true; card.setAttribute('aria-label', 'Task');
   document.body.append(col, gutter, collapseBtn, card);
 
-  var ul = col.querySelector('ul'), empty = col.querySelector('.empty'), count = col.querySelector('.count'), err = col.querySelector('.err');
+  var ul = col.querySelector('ul'), empty = col.querySelector('.empty'), count = col.querySelector('.count'), err = col.querySelector('.err'), bar = col.querySelector('.td-bar');
   var setOpen = function (open) {
     document.body.classList.toggle('tasks-open', open);
     collapseBtn.textContent = open ? '\u203a' : '\u2039';
@@ -193,6 +203,48 @@
     var done = tasks.filter(function (t) { return t.status === 'Done'; }).length;
     count.textContent = tasks.length ? done + '/' + tasks.length : '';
     empty.hidden = tasks.length > 0;
+    renderProgress();
+  }
+
+  // Task progress bar. Only for cards with taskProgress in card.json (cards built from the Code review template); every other card is untouched.
+  // Cancelled tasks are left out of the total. One bar sits under the TODO title and one in the card page between the tiles and the Description
+  // (only on generated card pages, which have a Description heading; a hand-written report just gets the one in the column).
+  var progressOn = false, pageBar = null;
+  function pageBarEl() {
+    if (pageBar && pageBar.isConnected) return pageBar;
+    var h = Array.prototype.filter.call(document.querySelectorAll('h2'), function (x) { return x.textContent.trim() === 'Description'; })[0];
+    if (!h || !h.parentNode) return null;
+    pageBar = document.createElement('div');
+    pageBar.id = 'td-pagebar'; pageBar.setAttribute('role', 'progressbar'); pageBar.setAttribute('aria-label', 'Task progress');
+    pageBar.innerHTML = '<span class="lbl"></span><div class="track"><i></i></div>';
+    h.parentNode.insertBefore(pageBar, h);
+    return pageBar;
+  }
+  function renderProgress() {
+    var pb = progressOn ? pageBarEl() : pageBar;
+    if (!progressOn) {
+      bar.hidden = true;
+      if (pb && pb.parentNode) pb.remove(); // the flag was switched off while the page was open
+      pageBar = null;
+      return;
+    }
+    var active = tasks.filter(function (t) { return t.status !== 'Cancelled'; });
+    var done = active.filter(function (t) { return t.status === 'Done'; }).length;
+    var pct = active.length ? Math.round(done * 100 / active.length) : 0, full = active.length > 0 && done === active.length;
+    var title = active.length ? done + ' of ' + active.length + ' tasks done' : 'No tasks yet';
+    bar.hidden = false; bar.classList.toggle('full', full); bar.firstChild.style.width = pct + '%'; bar.title = title;
+    if (pb) {
+      pb.classList.toggle('full', full); pb.title = title; pb.setAttribute('aria-valuenow', pct);
+      pb.querySelector('i').style.width = pct + '%';
+      pb.querySelector('.lbl').textContent = !active.length ? 'No tasks yet' : full ? 'All ' + active.length + ' tasks done' : 'Tasks ' + done + '/' + active.length;
+    }
+  }
+  function loadFlag() {
+    return fetch('/api/cards').then(function (r) { return r.json(); }).then(function (cards) {
+      var c = cards.filter(function (x) { return x.id === id; })[0];
+      progressOn = !!(c && c.taskProgress === true);
+      renderProgress();
+    }).catch(function () {});
   }
 
   function render(list) {
@@ -311,7 +363,8 @@
 
   // Edits made to tasks.json by the card's Claude session show up here without reloading the page.
   window.__live.on('tasks', function (d) { if (d === id) load(); });
+  window.__live.on('card', function (d) { if (d === id) loadFlag(); });
   fetch('/api/options').then(function (r) { return r.json(); }).then(function (o) {
     STATUS = o.status || STATUS; PRIORITY = o.priority || PRIORITY;
-  }).catch(function () {}).then(load);
+  }).catch(function () {}).then(load).then(loadFlag);
 })();

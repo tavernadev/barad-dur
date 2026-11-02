@@ -158,8 +158,9 @@ the repo, relative to the repo folder, or a full path like `/home/you/...` or `~
   inbox/done/<n>/             an Inbox card whose status is Done
   topics/<n>/                 a card being worked on
   topics/done/<n>/            a Topics card whose status is Done
+  templates/<id>/template.json   a card template (see "Card templates"); seeded once from examples/templates/
   <card folder>/
-    card.json                 number, title, description, status, priority, ticket, tags, notes, created, updated
+    card.json                 number, title, description, status, priority, ticket, tags, notes, created, updated (and optional links, taskProgress)
     index.html                the card's page (generated for new cards; hand-written reports exist for older ones), served at /card/<n>
     tabs.json                 new cards only: the ordered tabs [{id, title}] (Scoping, Findings, and any added later)
     tabs/<id>.html            one tab's content, an HTML fragment (see "Tabs")
@@ -193,6 +194,7 @@ static/              shared assets: card.css/card.js (generated pages), tasks.js
                      256x256, the "Molten golden all-seeing eye" cropped tight) and barad-dur.png (the
                      official project image, 512x512, the README logo); both are the user's own generated art
 examples/topics/     sample card (with tasks) seeded into <data>/topics on the first run of a fresh clone
+examples/templates/  the default card templates (generic), copied into <data>/templates once, never over an edited copy
 start.sh, terminal.sh, card-terminal.sh, load-env.sh   launchers; load-env.sh reads .env without overriding the environment
 scripts/             local helper scripts, gitignored and not in the repo; never commit this folder
 test/api.test.js     API, storage, migration and launcher tests in a no-port harness with a fake `claude` (`npm test`); CI runs them
@@ -207,7 +209,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 ## Configuration and privacy (repo hygiene)
 
 - **Settings are environment variables**, never hardcoded: `APP_NAME`, `HOST`, `PORT`, `TTYD_PORT`,
-  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
+  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `GH_BIN`, `CODE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
   and the shell scripts load it through `load-env.sh`; in both, **real environment variables win over `.env`**. The
   browser-safe settings are served at `/api/config`. When you add a setting, add it to `example.env` with a default and
   a comment, and to the README table in the same turn. Edits to `.env` need a server restart (tell the user);
@@ -274,8 +276,9 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **Permanent header:** `shell.html` has a fixed bar across the top of every page (44px, above the terminal and the content),
   which is the app's menu and is never reloaded with the content. Left: the logo and app name, which open or focus the home
   tab. **There is no separate "Home" link, on any card** (the user removed it); card pages do not carry their own link back either (the
-  injected `static/tasks.js` removes a page's `href="/"` nav link when it runs inside the shell). Right: the menu buttons; today only a **Settings** gear that does nothing yet. Add new menu entries to the `#bar`
-  `nav`, not to individual pages.
+  injected `static/tasks.js` removes a page's `href="/"` nav link when it runs inside the shell). Right: the menu buttons; today only a **Settings** gear, which opens a small menu with **Open in VS Code**. That item calls
+  `POST /api/open-vscode`, and the server runs `CODE_BIN` (default `code`) on the project's own folder with fixed arguments, no shell, and the same
+  write guards as the card API; the folder is never taken from the request. Add new menu entries to the `#bar` `nav` (or this menu), not to individual pages.
 - **Tab titles say which session a tab is:** `<APP_NAME> - main` on the home tab and `<APP_NAME> - #<n>` on a card's tab
   (set in `shell.html`, so several tabs are easy to tell apart).
 - Clicking a card on the main page opens `/card/<n>` in a **new browser tab** named `card-<n>`; the home tab is
@@ -312,12 +315,29 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   In Progress and Scoping on. Done and Cancelled apply to both columns; In Progress and Scoping apply to the Topics grid only;
   Pending, Blocked, Code Review and Testing are always shown. Hidden cards are only hidden, never moved. The cards' "Updated
   <date>" line stays: the user asked to keep it.
-- **Card templates:** the card titled **Templates** (find it by title in `card.json`) holds ready-made templates, one tab each (for example
-  "Code review template"). When the user asks for a card "from a template" or names one ("create a code review card for <link>"), read that
-  tab, create the card with the fields it lists (title, place, status, ticket), fill the blanks from what the user gave and from the source
-  (for example `gh pr view` for a pull request), and put the template's description text in the card's description. Ask only for details you
-  cannot find. When the user asks to add or change a template, edit that card's tabs (add a tab with `POST /api/cards/<n>/tabs`). Keep the
-  templates generic: no real names, tickets or links.
+- **Card templates** are files, `<data>/templates/<id>/template.json`: `name`, `title` and `description` (both with `{{blanks}}`), `place`
+  (`Inbox` by default, or `Topics`), `status` (one of Pending, Scoping, In Progress, Code Review, Testing; Done, Blocked and Cancelled are not
+  allowed) and `blanks`, the list the user is asked for (`{key, label, hint, kind}`; kind `github-pr` is a pull request link, anything else is
+  plain text), optional `progress: true` (the cards made from it get the task progress bar, see "Tasks"; the shipped Code review template sets it) and optional `defaults` (`{blank: "text"}`: values for blanks the user is not asked for). **Anything specific to one team or
+  company, such as the name of a skill, goes in `defaults` of the local copy under the gitignored data folder, never in a committed file**; the shipped
+  template keeps a generic value (for example "your code review skill"). The default **Code review** template ships generic in `examples/templates/code-review/` and is copied into the data folder once,
+  when `<data>/templates/` does not exist; an edited, renamed or deleted copy is never overwritten or put back. The **Templates** card (find it by
+  title) keeps readable copies as tabs, but **the template file is the source of truth**.
+  - **To create a card from a template** (the user says "create a code review card for <link>", or uses the Template picker in the Inbox **+**
+    dialog): `POST /api/cards` with `{"template":"code-review","values":{"pr":"<github pull request url>"}}`. `GET /api/templates` lists them.
+    Two optional extras work on any template: `"instructions":"<text>"` (at most 1500 characters; it is added to the end of the description under
+    "Extra instructions (follow these as well as the steps above)", so the card's session reads and follows it) and `"topics":true` (files the card in
+    Topics instead of the Inbox; `POST /api/cards` for a plain card accepts `topics` too, and a non-boolean value is a 400). The dialog has both:
+    an "Extra instructions (optional)" box and a "Create in Topics" checkbox. A session that reads a card whose description has extra instructions
+    must follow them.
+    For a pull request link the server reads the title, file count, lines, draft flag and ticket key with `gh pr view` and fills the rest of the
+    blanks (`repo`, `number`, `title`, `short_title`, `ticket`, `files`, `added`, `removed`, `draft`, `pr`); the card gets `ticket` and `pr` set.
+  - **Only `https://github.com/<org>/<repo>/pull/<n>` links are accepted** (optionally followed by `/files`, `/commits` or `/checks`). `gh` is called
+    with fixed arguments (never a shell string), read-only, and **never writes to GitHub**. If `gh` is missing, not signed in or the PR is not found,
+    the card is still created with the link, the blanks it could not fill stay visible as `{{name}}`, and the response carries a short `warning`
+    (the Inbox dialog shows it). Tell the user when you see a warning.
+  - **Adding or changing a template** means editing its `template.json` (and its readable tab on the Templates card). Keep shipped templates generic:
+    no real names, tickets or links.
 - **Topics:** cards being worked on. A hand-made Topics card needs `topics/<n>/card.json` (with `number` equal to the
   folder name) and an `index.html`; use the next free number from `.counter` (or create it in the Inbox and move it).
 - **Identifiers:** every card has a workspace `number` (`#1`, `#2`, ...), also its folder name; see "Where things
@@ -345,7 +365,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   (empty string removes; anything else is a 400). **When a card has such a link, put it in the field** instead of only in the
   description or notes, and keep a card's own Description and Notes as the user wrote them. A Linear ticket stays in `ticket`.
 - Change a card with `POST /api/cards/<n>`, `Content-Type: application/json`, a body like `{"status":"Testing"}`
-  (accepts `status`, `blockedReason`, `cancelledReason`, `priority`, `inbox`, `ticket`, `notion`, `project`, `pr`, `title`, `description`, `notes`). The API keeps `updated` current and
+  (accepts `status`, `blockedReason`, `cancelledReason`, `priority`, `inbox`, `taskProgress`, `ticket`, `notion`, `project`, `pr`, `title`, `description`, `notes`). The API keeps `updated` current and
   moves the folder when `status` becomes or stops being Done, or `inbox` changes. The user may have changed things
   in the browser, so re-read `card.json` before editing it and never revert their changes.
 - **Generated (Inbox) cards are editable in the browser:** the title, description and notes are inputs that save
@@ -419,6 +439,12 @@ single page; do not convert one unless the user asks. Done and Cancelled cards a
 - Every card's report page gets a right-hand **TODO** column, injected by the server (`static/tasks.js`), so
   hand-written reports need no markup for it. It has a middle button to collapse/expand it and a drag handle to resize
   it (width and state are remembered).
+- **Task progress bar (only cards with `taskProgress: true` in `card.json`, which today means cards built from the Code review template).** Such a
+  card shows a thin bar under the TODO title and a bigger one in the card page, **between the tiles and the Description** (`Tasks 3/7`, green and
+  "All 7 tasks done" at 100%); a hand-written report has only the one in the column. The fixed header has no progress bar. The bar is done
+  divided by the tasks that are not Cancelled, and it updates live as tasks change status. **Every other card shows neither bar and sends nothing.**  The flag is set by the server for cards created from a template with `progress: true`; turn it on or off for an existing card with
+  `POST /api/cards/<n>` and `{"taskProgress":true|false}` (only a real boolean is accepted). A card session on such a card keeps its tasks current
+  as usual: setting a task Done is what moves the bar.
 - A **task belongs to a card** and has: `order`, `title`, `status`, `priority`, and `updates` (a log). Clicking
   a task opens it as a card layered over the report (not a popup), with an input box for writing updates.
 - Stored as one folder per task, `<card folder>/tasks/<card number>-<k>/task.json` (`tasks/done/` once Done):

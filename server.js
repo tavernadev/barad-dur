@@ -5,7 +5,9 @@
 //   /content/home    -> the Topics grid and the Inbox
 //   /content/<n>/*   -> files of card n (HTML gets the live-reload snippet; the report also gets the TODO column)
 //   /api/config      -> public settings (app name, terminal port, Linear base URL)
-//   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description)
+//   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description), or from a template ({template, values, instructions?}); "topics": true files the new card in Topics instead of the Inbox
+//   /api/templates   -> GET the card templates (what the + dialog offers)
+//   /api/open-vscode -> POST (no arguments): runs `code <this project's folder>` so VS Code opens the project; the folder is fixed, never taken from the request
 //   /api/cards/<n>   -> POST status / priority / inbox / ticket / notion / project / pr / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
 //   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
@@ -21,6 +23,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 
 const ROOT = __dirname;
 try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* no .env: defaults and the real environment apply */ }
@@ -32,6 +35,9 @@ const INBOX = path.join(DATA, 'inbox');       // cards awaiting a decision to be
 const DONE = 'done';                          // finished items, inside topics/, inbox/ and <card>/tasks/
 const SESSIONS = path.join(DATA, '.sessions'); // Claude session id per card number (and "main")
 const COUNTER = path.join(DATA, '.counter');   // last card number handed out
+const TEMPLATES = path.join(DATA, 'templates'); // card templates: templates/<id>/template.json
+const CODE_BIN = process.env.CODE_BIN || 'code'; // the VS Code command, run by the header's "Open in VS Code" on this project's folder
+const GH_BIN = process.env.GH_BIN || 'gh'; // the GitHub CLI, only used to read pull request details for a card template
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '127.0.0.1';
 // Public settings the browser needs (served at /api/config). No secrets here.
@@ -195,6 +201,108 @@ function nextNumber() {
   const n = Math.max(readCounter(COUNTER), ...listCards().map((c) => c.number)) + 1;
   fs.writeFileSync(COUNTER, n + '\n');
   return n;
+}
+
+// ---- card templates: <data>/templates/<id>/template.json
+// { name, title, place ("Inbox" or "Topics"), status, description, blanks: [{ key, label, hint, kind }], defaults: { <blank>: "text" }, progress: true }.
+// `progress: true` marks the cards made from it with taskProgress, which turns on the task progress bar for those cards only. `title` and `description` hold
+// {{blanks}}. The user gives only the blanks listed in `blanks`; a blank of kind "github-pr" is a pull request link and the server
+// fills repo, number, title, short_title, ticket, files, added, removed and draft from it with `gh pr view` (read-only, fixed arguments,
+// never a shell string). Blanks that cannot be filled stay visible as {{name}} in the new card. The default templates ship in
+// examples/templates/ and are copied here once, when the templates folder does not exist yet; an edited copy is never overwritten.
+const TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const BLANK_KEY = /^[a-z][a-z0-9_]{0,29}$/;
+const TEMPLATE_STATUS = ['Pending', 'Scoping', 'In Progress', 'Code Review', 'Testing']; // no Done, Blocked or Cancelled: those need a folder move or a reason
+function readTemplate(id) {
+  if (!TEMPLATE_ID.test(String(id))) return null;
+  let t; try { t = JSON.parse(fs.readFileSync(path.join(TEMPLATES, id, 'template.json'), 'utf8')); } catch { return null; }
+  const str = (v, max) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
+  if (!t || typeof t !== 'object' || !str(t.name, 60) || !str(t.title, 300) || !str(t.description, 3500)) return null;
+  const blanks = (Array.isArray(t.blanks) ? t.blanks : []).filter((b) => b && BLANK_KEY.test(String(b.key)) && str(b.label, 80)).slice(0, 5)
+    .map((b) => ({ key: b.key, label: b.label, hint: typeof b.hint === 'string' ? b.hint.slice(0, 120) : '', kind: b.kind === 'github-pr' ? 'github-pr' : 'text' }));
+  if (!blanks.length) return null;
+  // `defaults`: values for blanks the user is not asked for (for example the name of a skill that is specific to one team). They live in this
+  // file, which is in the gitignored data folder, so local choices never reach the open-source repo; the shipped template keeps a generic value.
+  const defaults = {};
+  if (t.defaults && typeof t.defaults === 'object' && !Array.isArray(t.defaults)) for (const [k, v] of Object.entries(t.defaults)) if (BLANK_KEY.test(k) && typeof v === 'string' && v.length <= 200) defaults[k] = v;
+  return { id, name: t.name.trim(), defaults, progress: t.progress === true, title: t.title, description: t.description, blanks, place: t.place === 'Topics' ? 'Topics' : 'Inbox',
+    status: TEMPLATE_STATUS.includes(t.status) ? t.status : 'Pending' };
+}
+function listTemplates() {
+  let ids = []; try { ids = fs.readdirSync(TEMPLATES, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(); } catch { /* no templates folder */ }
+  return ids.map(readTemplate).filter(Boolean);
+}
+const fillBlanks = (text, values) => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(values, k) ? String(values[k]) : m)); // one pass: values are never re-expanded
+
+// Only https://github.com/<org>/<repo>/pull/<number> (optionally followed by /files, /commits or /checks) is accepted.
+function parsePullLink(v) {
+  let u; try { u = new URL(String(v).trim()); } catch { return null; }
+  const m = u.protocol === 'https:' && u.hostname === 'github.com' && !u.username && !u.password && !u.port
+    && u.pathname.match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d{1,8})(?:\/(?:files|commits|checks))?\/?$/);
+  return m ? { org: m[1], repo: m[2], number: Number(m[3]), link: `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}` } : null;
+}
+// Read the pull request's metadata with the GitHub CLI. Resolves { values } or { warning }; it never rejects and never writes to GitHub.
+function ghPull(p) {
+  return new Promise((resolve) => {
+    const args = ['pr', 'view', String(p.number), '--repo', `${p.org}/${p.repo}`, '--json', 'title,isDraft,changedFiles,additions,deletions,headRefName,state'];
+    execFile(GH_BIN, args, { timeout: 20000, maxBuffer: 1 << 20, env: process.env }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = String(stderr || '');
+        if (err.code === 'ENOENT') return resolve({ warning: 'The GitHub CLI (gh) is not installed, so the pull request details were not filled in.' });
+        if (/auth login|not logged in|authentication|GH_TOKEN/i.test(msg)) return resolve({ warning: 'gh is not signed in (run "gh auth login"), so the pull request details were not filled in.' });
+        if (/could not resolve|not found|no pull requests/i.test(msg)) return resolve({ warning: 'Pull request not found, so its details were not filled in.' });
+        return resolve({ warning: 'Could not read the pull request, so its details were not filled in.' });
+      }
+      let j; try { j = JSON.parse(stdout); } catch { return resolve({ warning: 'Could not read the pull request, so its details were not filled in.' }); }
+      const title = typeof j.title === 'string' ? j.title.trim() : '';
+      const key = (title.match(/\b[A-Z][A-Z0-9]*-\d+\b/) || String(j.headRefName || '').match(/\b[A-Za-z][A-Za-z0-9]*-\d+\b/) || [''])[0].toUpperCase();
+      const short = title.replace(/^\w+(\([^)]*\))?!?:\s*/, '').replace(/^[A-Z][A-Z0-9]*-\d+:\s*/, '').trim() || title;
+      const num = (n) => (Number.isFinite(Number(n)) ? String(Number(n)) : '?');
+      resolve({ values: { title, short_title: short, ticket: key || 'no ticket', files: num(j.changedFiles), added: num(j.additions), removed: num(j.deletions),
+        draft: j.isDraft ? 'draft' : (String(j.state || 'OPEN') === 'OPEN' ? 'ready for review' : String(j.state).toLowerCase()) }, ticketKey: key });
+    });
+  });
+}
+
+// Create a card (folder, page, Scoping and Findings tabs, card.json last so the card appears once complete).
+function createCard({ title, description, inbox = true, status = 'Pending', ticket, pr, taskProgress }) {
+  const number = nextNumber();
+  const dir = cardPath(number, inbox, false);
+  const meta = { number, title, description, status, tags: [], created: today(), updated: today() };
+  if (ticket) meta.ticket = ticket;
+  if (pr) meta.pr = pr;
+  if (taskProgress) meta.taskProgress = true; // cards built from a template that sets `progress`: the task progress bar (TODO column and header)
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'index.html'), renderCardHtml(meta));
+  addTab(dir, 'Scoping'); addTab(dir, 'Findings');
+  fs.writeFileSync(path.join(dir, 'card.json'), JSON.stringify(meta, null, 2) + '\n');
+  return { ...meta, id: String(number), inbox, done: false };
+}
+async function createFromTemplate(d, res) {
+  try {
+    const tpl = typeof d.template === 'string' ? readTemplate(d.template) : null;
+    if (!tpl) return send(res, 400, 'Unknown template');
+    const given = d.values && typeof d.values === 'object' && !Array.isArray(d.values) ? d.values : {};
+    const values = { ...tpl.defaults }; let warning = '', pr = '', ticket = '';
+    for (const b of tpl.blanks) {
+      const v = typeof given[b.key] === 'string' ? given[b.key].trim() : '';
+      if (!v || v.length > 500) return send(res, 400, `Missing value: ${b.label}`);
+      if (b.kind !== 'github-pr') { values[b.key] = v; continue; }
+      const p = parsePullLink(v);
+      if (!p) return send(res, 400, 'Invalid pull request link (expected https://github.com/<org>/<repo>/pull/<number>)');
+      pr = p.link; Object.assign(values, { [b.key]: p.link, org: p.org, repo: p.repo, number: String(p.number) });
+      const got = await ghPull(p);
+      if (got.warning) warning = got.warning; else { Object.assign(values, got.values); ticket = got.ticketKey; }
+    }
+    // Optional extra instructions for the card's Claude session, typed in the dialog: appended to the description, which the session reads first.
+    const extra = d.instructions === undefined || d.instructions === null ? '' : typeof d.instructions === 'string' ? d.instructions.trim() : null;
+    if (extra === null || extra.length > 1500) return send(res, 400, 'Invalid instructions (text, at most 1500 characters)');
+    const tail = extra ? `\n\nExtra instructions (follow these as well as the steps above):\n${extra}` : '';
+    const title = fillBlanks(tpl.title, values).replace(/\s+/g, ' ').trim().slice(0, 200) || tpl.name;
+    const description = fillBlanks(tpl.description, values).slice(0, 4000 - tail.length) + tail;
+    const card = createCard({ title, description, inbox: tpl.place !== 'Topics' && d.topics !== true, status: tpl.status, ticket, pr, taskProgress: tpl.progress });
+    send(res, 201, JSON.stringify(warning ? { ...card, warning } : card), TYPES['.json']);
+  } catch (e) { send(res, 500, 'Could not create the card from the template'); }
 }
 
 function renderCardHtml(meta) {
@@ -408,6 +516,9 @@ if (!fs.existsSync(TOPICS) && !fs.existsSync(INBOX)) {
   try { fs.cpSync(path.join(ROOT, 'examples', 'topics'), TOPICS, { recursive: true }); } catch { /* examples are optional */ }
 }
 for (const d of [TOPICS, INBOX]) fs.mkdirSync(d, { recursive: true });
+if (!fs.existsSync(TEMPLATES)) { // default card templates, once; an edited or deleted copy is never put back over
+  try { fs.cpSync(path.join(ROOT, 'examples', 'templates'), TEMPLATES, { recursive: true, force: false }); } catch { fs.mkdirSync(TEMPLATES, { recursive: true }); }
+}
 watchCards();
 
 http.createServer((req, res) => {
@@ -425,20 +536,29 @@ http.createServer((req, res) => {
     // Create a card in the Inbox: title + description -> inbox/<number>/{card.json,index.html}
     if (!guardJson(req, res)) return;
     return readJson(req, res, (d) => {
+      if (d.topics !== undefined && typeof d.topics !== 'boolean') return send(res, 400, 'topics must be true or false');
+      if (d.template !== undefined) return createFromTemplate(d, res); // { template: "<id>", values: { <blank>: "..." }, instructions?, topics? }
       const title = typeof d.title === 'string' ? d.title.trim() : '';
       const description = typeof d.description === 'string' ? d.description.trim() : '';
       if (!title || title.length > 200 || description.length > 4000) return send(res, 400, 'Invalid title or description');
-      const number = nextNumber();
-      const dir = cardPath(number, true, false);
-      const meta = { number, title, description, status: 'Pending', tags: [], created: today(), updated: today() };
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'index.html'), renderCardHtml(meta));
-      addTab(dir, 'Scoping'); addTab(dir, 'Findings');
-      fs.writeFileSync(path.join(dir, 'card.json'), JSON.stringify(meta, null, 2) + '\n'); // last: the card appears once complete
-      send(res, 201, JSON.stringify({ ...meta, id: String(number), inbox: true, done: false }), TYPES['.json']);
+      send(res, 201, JSON.stringify(createCard({ title, description, inbox: d.topics !== true })), TYPES['.json']); // topics: true files it in Topics, not the Inbox
     });
   }
   if (p === '/api/cards') return send(res, 200, JSON.stringify(listCards()), TYPES['.json']);
+  if (p === '/api/open-vscode') { // the header's Settings menu: open this project in VS Code. Fixed command and folder, no shell, same write guards as the card API.
+    if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+    if (!guardJson(req, res)) return;
+    return readJson(req, res, () => {
+      execFile(CODE_BIN, [ROOT], { timeout: 15000, env: process.env }, (err) => {
+        if (err) {
+          const error = err.code === 'ENOENT' ? `The "${CODE_BIN}" command was not found. In VS Code run "Shell Command: Install 'code' command in PATH", or set CODE_BIN.` : 'VS Code did not start.';
+          return send(res, 500, JSON.stringify({ error }), TYPES['.json']);
+        }
+        send(res, 200, JSON.stringify({ ok: true, folder: path.basename(ROOT) }), TYPES['.json']);
+      });
+    });
+  }
+  if (p === '/api/templates' && req.method === 'GET') return send(res, 200, JSON.stringify(listTemplates().map((t) => ({ id: t.id, name: t.name, place: t.place, status: t.status, blanks: t.blanks }))), TYPES['.json']);
   if (p === '/api/options') return send(res, 200, JSON.stringify(OPTIONS), TYPES['.json']);
   if (p === '/api/config') return send(res, 200, JSON.stringify(CONFIG), TYPES['.json']);
 
@@ -555,7 +675,7 @@ http.createServer((req, res) => {
       const fields = Object.keys(changes);
       const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
       const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : v.length <= (f === 'notes' ? 20000 : 4000));
-      const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || (f === 'inbox' && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f])) || (LINK_FIELDS[f] && linkOk(f, changes[f]))
+      const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || ((f === 'inbox' || f === 'taskProgress') && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f])) || (LINK_FIELDS[f] && linkOk(f, changes[f]))
         || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]))
         || (Object.values(REASON_FIELD).includes(f) && typeof changes[f] === 'string' && changes[f].trim() !== '' && changes[f].trim().length <= 1000);
       if (!fields.length || !fields.every(valid)) return send(res, 400, 'Unknown field or value');
@@ -569,6 +689,7 @@ http.createServer((req, res) => {
       }
       fields.forEach((f) => {
         if (f === 'inbox') return; // not stored: it is where the folder lives
+        if (f === 'taskProgress') { if (changes[f]) meta.taskProgress = true; else delete meta.taskProgress; return; }
         if (f === 'title' || f === 'description' || Object.values(REASON_FIELD).includes(f)) meta[f] = changes[f].trim();
         else if (LINK_FIELDS[f]) { if (changes[f].trim()) meta[f] = changes[f].trim(); else delete meta[f]; }
         else if (f !== 'ticket') meta[f] = changes[f];

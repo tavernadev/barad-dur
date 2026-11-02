@@ -56,8 +56,15 @@
   .add:hover { border-color:var(--accent); color:var(--accent); }
   #form { display:none; flex-direction:column; gap:8px; background:var(--card); border:1px solid var(--accent); border-radius:10px; padding:12px; margin:12px 0; }
   #form.open { display:flex; }
+  #form select { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; cursor:pointer; }
+  #form .f-row { display:flex; flex-direction:column; gap:4px; }
+  #form .f-row > label { font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  #form [hidden] { display:none !important; }
   #form input, #form textarea { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; resize:vertical; }
   #form textarea { min-height:90px; }
+  #form #f-extra { min-height:64px; }
+  #form .f-check { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+  #form .f-check input { width:auto; margin:0; }
   #form .actions { display:flex; gap:8px; justify-content:flex-end; }
   #form button { border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:4px 12px; cursor:pointer; }
   #form button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
@@ -103,6 +110,10 @@
       </div>
       <p class="sub">Cards awaiting a decision to be worked on (<code>inbox/&lt;number&gt;/</code>).</p>
       <form id="form" autocomplete="off">
+        <div class="f-row"><label for="f-template">Template</label><select id="f-template" aria-label="Template"><option value="">None</option></select></div>
+        <div id="f-blanks"></div>
+        <div class="f-row" id="f-extra-row" hidden><label for="f-extra">Extra instructions (optional)</label><textarea id="f-extra" maxlength="1500" placeholder="For the card's Claude session, for example: also look closely at the migrations and say if they are safe to run"></textarea></div>
+        <label class="f-check"><input type="checkbox" id="f-topics"> Create in Topics (instead of the Inbox)</label>
         <input id="f-title" name="title" placeholder="Title" maxlength="200" required>
         <textarea id="f-desc" name="description" placeholder="Description" maxlength="4000"></textarea>
         <div class="actions">
@@ -145,13 +156,42 @@
   document.getElementById('add').addEventListener('click', () => (form.classList.contains('open') ? close() : open()));
   document.getElementById('cancel').addEventListener('click', close);
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  // Template picker (default: none). A template asks only for its blanks (for Code review, the pull request link); the server fills in the rest.
+  const tplSel = document.getElementById('f-template'), blanksEl = document.getElementById('f-blanks');
+  const titleEl = document.getElementById('f-title'), descEl = document.getElementById('f-desc');
+  const topicsEl = document.getElementById('f-topics');
+  let templates = [];
+  fetch('/api/templates').then((r) => (r.ok ? r.json() : [])).then((list) => {
+    templates = list;
+    list.forEach((t) => tplSel.add(new Option(t.name, t.id)));
+  }).catch(() => { /* no templates: the picker stays on None */ });
+  const applyTemplate = () => {
+    const t = templates.find((x) => x.id === tplSel.value);
+    titleEl.hidden = descEl.hidden = !!t;
+    titleEl.required = !t;
+    document.getElementById('f-extra-row').hidden = !t;
+    blanksEl.textContent = '';
+    if (!t) return;
+    t.blanks.forEach((b) => {
+      const row = document.createElement('div'); row.className = 'f-row';
+      const label = document.createElement('label'); label.textContent = b.label; label.htmlFor = 'f-blank-' + b.key;
+      const input = document.createElement('input'); input.id = 'f-blank-' + b.key; input.dataset.key = b.key; input.placeholder = b.hint || ''; input.required = true; input.maxLength = 500;
+      row.append(label, input); blanksEl.appendChild(row);
+    });
+    const first = blanksEl.querySelector('input'); if (first) first.focus();
+  };
+  tplSel.addEventListener('change', applyTemplate);
+  form.addEventListener('reset', () => setTimeout(applyTemplate, 0)); // close() resets the form: back to None
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const save = document.getElementById('save');
     save.disabled = true;
-    post('/api/cards', { title: document.getElementById('f-title').value, description: document.getElementById('f-desc').value })
-      .then(close) // the server's file watcher reloads this page, so the new item shows up
-      .catch(() => alert('Could not add the card'))
+    const body = tplSel.value
+      ? { template: tplSel.value, values: Object.fromEntries([...blanksEl.querySelectorAll('input')].map((i) => [i.dataset.key, i.value])), instructions: document.getElementById('f-extra').value, topics: topicsEl.checked }
+      : { title: titleEl.value, description: descEl.value, topics: topicsEl.checked };
+    post('/api/cards', body)
+      .then((card) => { if (card && card.warning) alert('Card #' + card.number + ' was created.\n\n' + card.warning + '\nThe blanks it could not fill in are shown as {{name}} in the card.'); close(); }) // the server's file watcher reloads this page, so the new item shows up
+      .catch(() => alert(tplSel.value ? 'Could not create the card from the template. Check the link (https://github.com/<org>/<repo>/pull/<number>).' : 'Could not add the card'))
       .finally(() => { save.disabled = false; });
   });
 

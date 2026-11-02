@@ -13,7 +13,7 @@ const REPO = path.join(__dirname, '..');
 const exists = (...p) => fs.existsSync(path.join(...p));
 
 // Build a throwaway "repo" (with the real examples/ and static/), let `prepare` set up files first, then load the server.
-function boot({ dataDir, prepare, noBirthtime } = {}) {
+function boot({ dataDir, prepare, noBirthtime, env: extraEnv } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-root-'));
   fs.cpSync(path.join(REPO, 'examples'), path.join(root, 'examples'), { recursive: true });
   fs.cpSync(path.join(REPO, 'static'), path.join(root, 'static'), { recursive: true });
@@ -22,6 +22,7 @@ function boot({ dataDir, prepare, noBirthtime } = {}) {
   const env = { ...process.env };
   delete env.DATA_DIR;
   if (dataDir !== undefined) env.DATA_DIR = dataDir;
+  Object.assign(env, extraEnv);
   let handler;
   const fakeHttp = { createServer: (h) => { handler = h; return { listen() {} }; } };
   // Like the real fs.watch, refuse a folder that does not exist (a server that watches before creating it must fail here).
@@ -329,6 +330,7 @@ test('card-terminal.sh: starts a card session, resumes it, and resumes an adopte
   assert.match(r.stdout, /Its folder is .*topics\/done\/8/, 'a done card is found in done/');
   assert.match(r.stdout, /This card has tabs: .*tabs\/scoping\.html.*tabs\/findings\.html.*POST .*\/api\/cards\/8\/tabs/, 'a tabbed card tells its session where to write');
   assert.match(r.stdout, /do not create an artifact unless the user asks; when the user asks for one, publish it and attach it to this card in the same turn/, 'artifacts are created and attached together');
+  assert.match(r.stdout, /"Extra instructions" section, follow it/, 'the session is told to follow extra instructions in the description');
   assert.doesNotMatch(r.stdout, /on your own/, 'the old "never attach" wording is gone');
   assert.doesNotMatch(run('7').stdout, /This card has tabs/, 'a card without tabs.json gets no tab instructions');
 
@@ -471,4 +473,249 @@ test('artifact: optional, never created by the server, attached through the API,
 test('config exposes only browser-safe settings', async () => {
   const { json } = await boot().call('GET', '/api/config');
   assert.deepEqual(Object.keys(json).sort(), ['appName', 'linearBaseUrl', 'ttydPort']);
+});
+
+// ---- card templates ----
+// A fake `gh` (like the fake claude): `gh pr view <n> ...` prints <dir>/<n>.json, or exits 1 with <dir>/<n>.json.err, and every call is logged.
+function fakeGh(prs) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-gh-'));
+  const bin = path.join(dir, 'gh'), log = path.join(dir, 'calls.log');
+  fs.writeFileSync(bin, '#!/bin/sh\necho "$@" >> "$FAKE_GH_LOG"\n[ "$1 $2" = "pr view" ] || { echo "unexpected: $*" >&2; exit 2; }\n'
+    + 'f="$FAKE_GH_DIR/$3.json"\n[ -f "$f.err" ] && { cat "$f.err" >&2; exit 1; }\ncat "$f"\n', { mode: 0o755 });
+  for (const [n, v] of Object.entries(prs)) fs.writeFileSync(path.join(dir, `${n}.json`) + (typeof v === 'string' ? '.err' : ''), typeof v === 'string' ? v : JSON.stringify(v));
+  return { env: { GH_BIN: bin, FAKE_GH_DIR: dir, FAKE_GH_LOG: log }, dir, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
+}
+const PR = (over) => ({ title: 'feat(entry): ABC-123: tidy the thing', isDraft: false, changedFiles: 3, additions: 10, deletions: 2, headRefName: 'feature/abc-123', state: 'OPEN', ...over });
+const REVIEW = (url) => ({ template: 'code-review', values: { pr: url } });
+const LINK = 'https://github.com/example-org/my-service/pull/7';
+
+test('templates: the default Code review template is seeded once and an edited copy is never overwritten', async () => {
+  const { call, data } = boot();
+  const list = (await call('GET', '/api/templates')).json;
+  assert.deepEqual(list.map((t) => [t.id, t.name, t.place, t.status]), [['code-review', 'Code review', 'Inbox', 'Code Review']]);
+  assert.deepEqual(list[0].blanks.map((b) => [b.key, b.kind]), [['pr', 'github-pr']], 'the user is asked for the pull request link only');
+  assert.ok(exists(data, 'templates', 'code-review', 'template.json'));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(REPO, 'examples', 'templates', 'code-review', 'template.json'), 'utf8')).defaults, { review_skill: 'your code review skill' }, 'the shipped template names no team-specific skill');
+  const shipped = fs.readFileSync(path.join(REPO, 'examples', 'templates', 'code-review', 'template.json'), 'utf8');
+  assert.doesNotMatch(shipped, /[A-Z]{2,}-\d{3,}|@[a-z]|https:\/\/(?!github\.com\/<org>\/)/, 'the shipped template is generic: no ticket keys, emails or real links');
+  // an existing templates folder is left alone: an edited copy stays, and a deleted default is not put back
+  const edited = boot({ prepare: (root) => {
+    fs.mkdirSync(path.join(root, 'data', 'templates', 'code-review'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'data', 'templates', 'code-review', 'template.json'), JSON.stringify({ name: 'My review', title: 'R {{repo}}', description: 'd {{pr}}', blanks: [{ key: 'pr', label: 'PR', kind: 'github-pr' }] }));
+  } });
+  assert.deepEqual((await edited.call('GET', '/api/templates')).json.map((t) => t.name), ['My review']);
+  const emptied = boot({ prepare: (root) => fs.mkdirSync(path.join(root, 'data', 'templates'), { recursive: true }) });
+  assert.deepEqual((await emptied.call('GET', '/api/templates')).json, []);
+  // broken templates are skipped, not fatal
+  const broken = boot({ prepare: (root) => { fs.mkdirSync(path.join(root, 'data', 'templates', 'bad'), { recursive: true }); fs.writeFileSync(path.join(root, 'data', 'templates', 'bad', 'template.json'), '{not json'); } });
+  assert.deepEqual((await broken.call('GET', '/api/templates')).json, []);
+});
+
+test('templates: a card from the Code review template is filled in from the pull request, read-only', async () => {
+  const gh = fakeGh({ 7: PR({ title: 'feat(entry): ABC-123: do $(touch pwned) `x` "quoted" thing' }), 8: PR({ title: 'chore: no key here', headRefName: 'feature/xyz-45-more', isDraft: true }), 9: PR({ title: 'fix: merged one', state: 'MERGED', headRefName: 'cleanup' }) });
+  const { call, data } = boot({ env: gh.env });
+  let r = await call('POST', '/api/cards', REVIEW(LINK + '/files'));
+  assert.equal(r.status, 201);
+  const c = r.json;
+  assert.equal(c.warning, undefined);
+  assert.equal(c.title, 'Code review: my-service PR 7 (do $(touch pwned) `x` "quoted" thing)');
+  assert.deepEqual([c.status, c.inbox, c.ticket, c.pr], ['Code Review', true, 'ABC-123', LINK], 'default place is the Inbox; the link is stored as a canonical pr link');
+  assert.match(c.description, /^Code review of my-service PR #7 \(ABC-123, "feat\(entry\): ABC-123: do \$\(touch pwned\) `x` "quoted" thing", 3 files, \+10 -2, ready for review\): https:\/\/github\.com\/example-org\/my-service\/pull\/7\n/);
+  assert.match(c.description, /7\. Comments: .*Do not post anything to GitHub unless I ask\.$/);
+  assert.doesNotMatch(c.description + c.title, /\{\{/, 'every blank was filled');
+  assert.ok(exists(data, 'inbox', c.id, 'tabs', 'scoping.html') && exists(data, 'inbox', c.id, 'tabs', 'findings.html'), 'a normal new card: page and tabs');
+  assert.equal(fs.existsSync(path.join(gh.dir, 'pwned')) || fs.existsSync(path.join(process.cwd(), 'pwned')), false, 'the title never reached a shell');
+  // a draft, and a ticket taken from the branch name when the title has none
+  r = await call('POST', '/api/cards', REVIEW('https://github.com/example-org/my-service/pull/8'));
+  assert.deepEqual([r.json.ticket, r.json.title, /, draft\)/.test(r.json.description)], ['XYZ-45', 'Code review: my-service PR 8 (no key here)', true]);
+  r = await call('POST', '/api/cards', REVIEW('https://github.com/example-org/my-service/pull/9'));
+  assert.match(r.json.description, /, merged\)/);
+  assert.equal(r.json.ticket, undefined, 'no ticket key anywhere: the field is left empty');
+  assert.match(r.json.description, /\(no ticket, /);
+  // gh was only ever asked to read, with fixed arguments
+  const calls = gh.calls();
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every((l) => /^pr view \d+ --repo example-org\/my-service --json title,isDraft,changedFiles,additions,deletions,headRefName,state$/.test(l)), calls.join('\n'));
+  assert.equal((await call('GET', '/api/cards')).json.filter((x) => x.pr).length, 3);
+});
+
+test('task progress bar: only cards built from a template that asks for it carry the flag', async () => {
+  const gh = fakeGh({ 7: PR() });
+  const { call, root } = boot({ env: gh.env, prepare: (r) => {
+    const d = path.join(r, 'data', 'templates');
+    fs.cpSync(path.join(REPO, 'examples', 'templates', 'code-review'), path.join(d, 'code-review'), { recursive: true }); // the folder exists, so nothing is seeded
+    fs.mkdirSync(path.join(d, 'plain'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'plain', 'template.json'), JSON.stringify({ name: 'Plain', title: 'P {{pr}}', description: 'd', blanks: [{ key: 'pr', label: 'PR', kind: 'github-pr' }] }));
+    fs.mkdirSync(path.join(d, 'with'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'with', 'template.json'), JSON.stringify({ name: 'With', title: 'W {{pr}}', description: 'd', progress: true, blanks: [{ key: 'pr', label: 'PR', kind: 'github-pr' }] }));
+    fs.mkdirSync(path.join(d, 'weird'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'weird', 'template.json'), JSON.stringify({ name: 'Weird', title: 'x {{pr}}', description: 'd', progress: 'yes', blanks: [{ key: 'pr', label: 'PR', kind: 'github-pr' }] }));
+  } });
+  const shipped = JSON.parse(fs.readFileSync(path.join(REPO, 'examples', 'templates', 'code-review', 'template.json'), 'utf8'));
+  assert.equal(shipped.progress, true, 'the shipped Code review template turns the progress bar on');
+  const make = async (tpl) => (await call('POST', '/api/cards', { template: tpl, values: { pr: LINK } })).json;
+  assert.equal((await make('code-review')).taskProgress, true);
+  assert.equal((await make('with')).taskProgress, true);
+  assert.equal((await make('plain')).taskProgress, undefined, 'a template without progress: no flag');
+  assert.equal((await make('weird')).taskProgress, undefined, 'only a real true counts');
+  assert.equal((await call('POST', '/api/cards', { title: 'Plain card' })).json.taskProgress, undefined, 'normal cards never carry it');
+  const flagged = (await make('code-review')).id;
+  assert.equal((await call('GET', '/api/cards')).json.find((c) => c.id === flagged).taskProgress, true);
+  // switch it on or off for an existing card with a real boolean only
+  assert.equal((await call('POST', '/api/cards/1', { taskProgress: true })).json.taskProgress, true);
+  assert.equal((await call('POST', '/api/cards/1', { taskProgress: false })).json.taskProgress, undefined);
+  for (const bad of ['yes', 1, null]) assert.equal((await call('POST', '/api/cards/1', { taskProgress: bad })).status, 400, JSON.stringify(bad));
+  // the injected script knows the flag and draws the page bar; the shell itself has no progress bar
+  assert.match((await call('GET', '/static/tasks.js')).body, /taskProgress/);
+  assert.match((await call('GET', '/static/tasks.js')).body, /td-pagebar/);
+  assert.doesNotMatch((await call('GET', '/')).body, /progress/i);
+});
+
+test('templates: defaults fill blanks the user is not asked for, from the local (gitignored) template file', async () => {
+  const gh = fakeGh({ 7: PR() });
+  // the shipped template: a generic skill name
+  const shipped = boot({ env: gh.env });
+  assert.match((await shipped.call('POST', '/api/cards', REVIEW(LINK))).json.description, /How to review \(use your code review skill\):/);
+  // the local copy sets its own value; the shipped repo files never need to name it
+  const local = boot({ env: gh.env, prepare: (root) => {
+    const d = path.join(root, 'data', 'templates', 'mine'); fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'template.json'), JSON.stringify({ name: 'Mine', title: 'T {{repo}}', description: 'Use {{review_skill}} on {{pr}} ({{other}}) {{asked}}',
+      blanks: [{ key: 'pr', label: 'PR', kind: 'github-pr' }, { key: 'asked', label: 'Asked', kind: 'text' }], defaults: { review_skill: 'my-team skill', asked: 'default value', 'bad key': 'x', num: 5, other_long: 'x'.repeat(201) } }));
+  } });
+  const r = (await local.call('POST', '/api/cards', { template: 'mine', values: { pr: LINK, asked: 'typed value' } })).json;
+  assert.equal(r.description, `Use my-team skill on ${LINK} ({{other}}) typed value`, 'defaults fill blanks, a typed value wins, an unknown blank stays visible');
+  assert.deepEqual(Object.keys((await local.call('GET', '/api/templates')).json[0]).sort(), ['blanks', 'id', 'name', 'place', 'status'], 'the template list does not expose defaults');
+  // the committed examples never name a skill of their own
+  assert.doesNotMatch(fs.readFileSync(path.join(REPO, 'examples', 'templates', 'code-review', 'template.json'), 'utf8'), /code-review skill/i);
+});
+
+test('templates: extra instructions typed in the dialog are added to the description for the card session', async () => {
+  const gh = fakeGh({ 7: PR(), 404: 'GraphQL: Could not resolve to a PullRequest with the number of 404.' });
+  const { call } = boot({ env: gh.env });
+  const base = (await call('POST', '/api/cards', REVIEW(LINK))).json.description;
+  const note = 'Also look closely at the migrations\nand say if they are safe to run.';
+  let r = await call('POST', '/api/cards', { ...REVIEW(LINK), instructions: `  ${note}  ` });
+  assert.equal(r.status, 201);
+  assert.equal(r.json.description, base + '\n\nExtra instructions (follow these as well as the steps above):\n' + note, 'the template text is unchanged and the instructions are added after it');
+  for (const none of [undefined, null, '', '   ']) { // nothing typed: the description is exactly the template's
+    const body = { ...REVIEW(LINK) }; if (none !== undefined) body.instructions = none;
+    assert.equal((await call('POST', '/api/cards', body)).json.description, base, JSON.stringify(none));
+  }
+  r = await call('POST', '/api/cards', { ...REVIEW('https://github.com/example-org/my-service/pull/404'), instructions: note });
+  assert.ok(r.json.warning && r.json.description.endsWith(note), 'still added when gh could not read the pull request');
+  const big = (await call('POST', '/api/cards', { ...REVIEW(LINK), instructions: 'x'.repeat(1500) })).json;
+  assert.ok(big.description.length <= 4000 && big.description.endsWith('x'.repeat(1500)));
+  const before = (await call('GET', '/api/cards')).json.length;
+  for (const bad of ['x'.repeat(1501), 5, ['a'], {}]) assert.equal((await call('POST', '/api/cards', { ...REVIEW(LINK), instructions: bad })).status, 400, JSON.stringify(bad).slice(0, 30));
+  assert.equal((await call('GET', '/api/cards')).json.length, before, 'a bad request creates no card');
+});
+
+test('a new card can be filed straight in Topics with the topics flag (templates and plain cards)', async () => {
+  const gh = fakeGh({ 7: PR() });
+  const { call, data } = boot({ env: gh.env });
+  let r = (await call('POST', '/api/cards', { ...REVIEW(LINK), topics: true })).json;
+  assert.equal(r.inbox, false);
+  assert.ok(exists(data, 'topics', r.id, 'card.json') && !exists(data, 'inbox', r.id), 'the folder is in topics/');
+  assert.equal(r.status, 'Code Review');
+  r = (await call('POST', '/api/cards', { title: 'Plain one', topics: true })).json;
+  assert.ok(r.inbox === false && exists(data, 'topics', r.id, 'tabs.json'), 'a plain card too, with its tabs');
+  for (const body of [REVIEW(LINK), { ...REVIEW(LINK), topics: false }, { title: 'Plain two' }, { title: 'Plain three', topics: false }]) {
+    const c = (await call('POST', '/api/cards', body)).json;
+    assert.ok(c.inbox === true && exists(data, 'inbox', c.id, 'card.json'), 'without the flag (or false) the card goes to the Inbox');
+  }
+  const before = (await call('GET', '/api/cards')).json.length;
+  for (const bad of ['yes', 1, null, []]) {
+    assert.equal((await call('POST', '/api/cards', { ...REVIEW(LINK), topics: bad })).status, 400, JSON.stringify(bad));
+    assert.equal((await call('POST', '/api/cards', { title: 'x', topics: bad })).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await call('GET', '/api/cards')).json.length, before);
+});
+
+test('templates: if gh cannot read the pull request the card is still created, with the blanks visible and a warning', async () => {
+  const gh = fakeGh({ 404: 'GraphQL: Could not resolve to a PullRequest with the number of 404.', 401: 'To get started with GitHub CLI, please run:  gh auth login', 500: 'something odd happened' });
+  const cases = [
+    [gh.env, 404, /not found/i], [gh.env, 401, /not signed in/i], [gh.env, 500, /Could not read the pull request/],
+    [{ ...gh.env, GH_BIN: path.join(gh.dir, 'no-such-gh') }, 7, /not installed/i],
+  ];
+  for (const [env, n, warn] of cases) {
+    const { call, data } = boot({ env });
+    const r = await call('POST', '/api/cards', REVIEW(`https://github.com/example-org/my-service/pull/${n}`));
+    assert.equal(r.status, 201, `PR ${n}`);
+    assert.match(r.json.warning, warn);
+    assert.equal(r.json.pr, `https://github.com/example-org/my-service/pull/${n}`, 'the link is kept');
+    assert.equal(r.json.title, `Code review: my-service PR ${n} ({{short_title}})`, 'blanks gh would have filled stay visible');
+    assert.match(r.json.description, /\(\{\{ticket\}\}, "\{\{title\}\}", \{\{files\}\} files, \+\{\{added\}\} -\{\{removed\}\}, \{\{draft\}\}\)/);
+    assert.ok(exists(data, 'inbox', r.json.id, 'card.json'));
+  }
+});
+
+test('templates: only github.com pull request links are accepted, and nothing is created or run for a bad request', async () => {
+  const gh = fakeGh({ 7: PR() });
+  const { call } = boot({ env: gh.env });
+  const before = (await call('GET', '/api/cards')).json.length;
+  const bad = ['http://github.com/o/r/pull/7', 'https://evil.example/o/r/pull/7', 'https://github.com/o/r/issues/7', 'https://github.com/o/r/pull/abc', 'https://github.com/o/r/pull/7/../../x',
+    'https://user@github.com/o/r/pull/7', 'https://github.com:8443/o/r/pull/7', 'https://github.com.evil.example/o/r/pull/7', 'https://github.com/o/r/pull/7;rm', 'javascript:alert(1)', 'not a url', ''];
+  for (const link of bad) assert.equal((await call('POST', '/api/cards', REVIEW(link))).status, 400, link);
+  for (const body of [{ template: 'nope', values: { pr: LINK } }, { template: '../x', values: { pr: LINK } }, { template: 5, values: {} }, { template: 'code-review' },
+    { template: 'code-review', values: [] }, { template: 'code-review', values: { pr: 5 } }, { template: 'code-review', values: { pr: LINK + 'x'.repeat(600) } }]) {
+    assert.equal((await call('POST', '/api/cards', body)).status, 400, JSON.stringify(body).slice(0, 80));
+  }
+  assert.equal((await call('POST', '/api/cards', REVIEW(LINK), { origin: 'https://evil.example' })).status, 403, 'same write guards as every card write');
+  assert.equal((await call('GET', '/api/cards')).json.length, before, 'no card was created');
+  assert.deepEqual(gh.calls(), [], 'gh was never run for a bad request');
+});
+
+test('templates: a template can put its card in Topics with another status; Done, Blocked and Cancelled are not allowed', async () => {
+  const gh = fakeGh({ 7: PR() });
+  const make = (extra) => boot({ env: gh.env, prepare: (root) => {
+    const d = path.join(root, 'data', 'templates');
+    fs.mkdirSync(path.join(d, 'a'), { recursive: true }); fs.mkdirSync(path.join(d, 'b'), { recursive: true });
+    const base = { title: 'T {{repo}} {{number}}', description: 'D {{pr}}', blanks: [{ key: 'pr', label: 'Pull request link', kind: 'github-pr' }] };
+    fs.writeFileSync(path.join(d, 'a', 'template.json'), JSON.stringify({ name: 'A', place: 'Topics', status: 'Testing', ...base }));
+    fs.writeFileSync(path.join(d, 'b', 'template.json'), JSON.stringify({ name: 'B', status: 'Done', ...base, ...extra }));
+  } });
+  const { call, data } = make({});
+  const r = await call('POST', '/api/cards', { template: 'a', values: { pr: LINK } });
+  assert.deepEqual([r.json.title, r.json.status, r.json.inbox], ['T my-service 7', 'Testing', false]);
+  assert.ok(exists(data, 'topics', r.json.id, 'card.json'));
+  const b = await call('POST', '/api/cards', { template: 'b', values: { pr: LINK } });
+  assert.deepEqual([b.json.status, b.json.inbox], ['Pending', true], 'a status that needs a folder move or a reason falls back to Pending');
+  // a text blank is just copied into the blanks
+  const t = boot({ prepare: (root) => { fs.mkdirSync(path.join(root, 'data', 'templates', 'note'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'data', 'templates', 'note', 'template.json'), JSON.stringify({ name: 'Note', title: 'Note: {{what}}', description: '{{what}} {{{{what}}}} {{unknown}}', blanks: [{ key: 'what', label: 'What', kind: 'text' }] })); } });
+  const n = (await t.call('POST', '/api/cards', { template: 'note', values: { what: 'a $& b' } })).json;
+  assert.deepEqual([n.title, n.description], ['Note: a $& b', 'a $& b {{a $& b}} {{unknown}}'], 'one pass: values and unknown blanks are never re-expanded or treated as patterns');
+});
+
+test('Settings > Open in VS Code: runs the code command on this project folder and nothing else', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-code-'));
+  const bin = path.join(dir, 'code'), log = path.join(dir, 'calls.log');
+  fs.writeFileSync(bin, '#!/bin/sh\necho "$@" >> "$FAKE_CODE_LOG"\n[ -n "$FAKE_CODE_FAIL" ] && exit 1\nexit 0\n', { mode: 0o755 });
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+  const { call, root } = boot({ env: { CODE_BIN: bin, FAKE_CODE_LOG: log } });
+  const real = fs.realpathSync(root);
+  let r = await call('POST', '/api/open-vscode', {});
+  assert.equal(r.status, 200);
+  assert.deepEqual([r.json.ok, r.json.folder], [true, path.basename(root)], 'the answer names the folder, not its full path');
+  assert.deepEqual(calls().map((l) => fs.realpathSync(l)), [real], 'one call, with the project folder as its only argument');
+  // the request cannot change what runs
+  r = await call('POST', '/api/open-vscode', { path: '/etc', folder: '/tmp', args: ['--evil'], bin: 'rm' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(calls().map((l) => fs.realpathSync(l)), [real, real], 'the folder and the command are fixed');
+  // the same write guards as the card API
+  assert.equal((await call('GET', '/api/open-vscode')).status, 405);
+  assert.equal((await call('POST', '/api/open-vscode', {}, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await call('POST', '/api/open-vscode', {}, { origin: 'null' })).status, 403);
+  assert.equal((await call('POST', '/api/open-vscode', {}, { 'content-type': 'text/plain' })).status, 403);
+  assert.equal(calls().length, 2, 'refused requests ran nothing');
+  // the command is missing, or it fails: a readable error, never a crash
+  const missing = boot({ env: { CODE_BIN: path.join(dir, 'no-such-code') } });
+  r = await missing.call('POST', '/api/open-vscode', {});
+  assert.equal(r.status, 500);
+  assert.match(r.json.error, /command was not found.*Install 'code' command in PATH.*CODE_BIN/);
+  const failing = boot({ env: { CODE_BIN: bin, FAKE_CODE_LOG: log, FAKE_CODE_FAIL: '1' } });
+  r = await failing.call('POST', '/api/open-vscode', {});
+  assert.deepEqual([r.status, r.json.error], [500, 'VS Code did not start.']);
+  // the shell has the menu item
+  assert.match((await call('GET', '/')).body, /id="open-vscode"/);
 });
