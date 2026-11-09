@@ -125,26 +125,28 @@
     </aside>
   </div>
 </div>
+<script src="/static/ticket.js"></script>
 <script src="/static/blocked.js"></script>
 <script>
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
   const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
 
-  // Workspace number (#1, #2, ...) is ours; the Linear ticket key is optional and can be added later.
-  let CFG = {}; // from /api/config (LINEAR_BASE_URL in .env); without it a ticket key is shown but not linked
+  // Workspace number (#1, #2, ...) is ours; the ticket (a link to any tracker, or a key like ABC-123) is optional and can be added later.
+  let CFG = {}; // from /api/config (LINEAR_BASE_URL in .env); without it a bare ticket key is shown but not linked
   const loadConfig = () => fetch('/api/config').then((r) => r.json()).then((c) => { CFG = c; }).catch(() => {});
-  const ticketHtml = (c) => c.ticket
-    ? (CFG.linearBaseUrl
-      ? `<a class="ticket" href="${esc(CFG.linearBaseUrl)}${encodeURIComponent(c.ticket)}" title="Open in Linear">${esc(c.ticket)}</a>`
-      : `<span class="ticket">${esc(c.ticket)}</span>`)
-    : '<button class="tk" type="button" data-ticket-edit>+ Linear ticket</button>';
+  // The label and link come from static/ticket.js (ClickUp, Linear, Jira, Trello... by the link's address), shared with the card pages.
+  const ticketHtml = (c) => {
+    const t = c.ticket && window.ticketInfo(c.ticket, CFG.linearBaseUrl);
+    if (!t) return '<button class="tk" type="button" data-ticket-edit>+ Ticket</button>';
+    return t.href ? `<a class="ticket" href="${esc(t.href)}" target="_blank" rel="noopener" title="${esc(t.title)}">${esc(t.label)}</a>` : `<span class="ticket">${esc(t.label)}</span>`;
+  };
   const wireTickets = (root, cards) => root.querySelectorAll('[data-ticket-edit]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.closest('[data-id]').dataset.id, card = cards.find((c) => c.id === id);
-      const v = prompt('Linear ticket key (e.g. ABC-123). Leave empty to remove.', card.ticket || '');
+      const v = prompt('Ticket link (ClickUp, Linear, Jira, Trello...) or key like ABC-123. Leave empty to remove.', card.ticket || '');
       if (v === null) return;
-      post('/api/cards/' + encodeURIComponent(id), { ticket: v }).catch(() => alert('Not a valid ticket key (expected something like ABC-123)'));
+      post('/api/cards/' + encodeURIComponent(id), { ticket: v }).catch(() => alert('Not a valid ticket: paste a link (ClickUp, Linear, Jira, Trello...) or a key like ABC-123'));
     });
   });
   const byNumber = (a, b) => (a.number || 1e9) - (b.number || 1e9);

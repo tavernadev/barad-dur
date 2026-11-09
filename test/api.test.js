@@ -131,11 +131,43 @@ test('Blocked needs a reason, shows it, and drops it when unblocked', async () =
   assert.deepEqual([r.cancelledReason, r.blockedReason], [undefined, 'again'], 'switching drops the other reason');
 });
 
+test('ticket.js names the tracker from the link, and never links anything but http(s)', () => {
+  const win = {}; new Function('window', fs.readFileSync(path.join(__dirname, '..', 'static', 'ticket.js'), 'utf8'))(win);
+  const info = win.ticketInfo;
+  const label = (v, base) => { const t = info(v, base); return t && [t.label, t.href]; };
+  assert.deepEqual(label('https://app.clickup.com/t/1234567/17abcdef'), ['ClickUp 17abcdef', 'https://app.clickup.com/t/1234567/17abcdef']);
+  assert.equal(info('https://app.clickup.com/t/17abcdef').label, 'ClickUp 17abcdef', 'a link without the workspace part');
+  assert.equal(info('https://linear.app/example/issue/abc-12/some-title').label, 'Linear ABC-12');
+  assert.equal(info('https://example.atlassian.net/browse/PRJ-9').label, 'Jira PRJ-9');
+  assert.equal(info('https://jira.example.com/browse/PRJ-9').label, 'Jira PRJ-9');
+  assert.equal(info('https://trello.com/c/AbC123/45-some-card').label, 'Trello AbC123');
+  assert.equal(info('https://github.com/example-org/my-service/issues/12').label, 'GitHub my-service#12');
+  assert.equal(info('https://app.asana.com/0/111/222222').label, 'Asana 222222');
+  assert.equal(info('https://app.shortcut.com/example/story/4321/title').label, 'Shortcut 4321');
+  assert.equal(info('https://www.tracker.example.org/items/42').label, 'tracker.example.org 42', 'anything else: the site name');
+  assert.equal(info('https://tracker.example.org/').label, 'tracker.example.org');
+  // a bare key keeps working: linked only when LINEAR_BASE_URL is set
+  assert.deepEqual(label('abc-123', 'https://linear.app/example/issue/'), ['ABC-123', 'https://linear.app/example/issue/ABC-123']);
+  assert.deepEqual(label('ABC-123', ''), ['ABC-123', '']);
+  // unsafe or unreadable values are shown as text and never linked
+  assert.deepEqual(label('javascript:alert(1)'), ['javascript:alert(1)', '']);
+  assert.equal(info('   '), null);
+  assert.equal(info(undefined), null);
+});
+
 test('card fields: dropdowns, ticket, text', async () => {
   const { call } = boot();
   const U = '/api/cards/1';
   assert.equal((await call('POST', U, { status: 'Testing', priority: 'Urgent' })).json.status, 'Testing');
   assert.equal((await call('POST', U, { ticket: ' abc-123 ' })).json.ticket, 'ABC-123');
+  assert.equal((await call('POST', U, { ticket: '' })).json.ticket, undefined);
+  // a ticket can also be a link to any tracker: kept exactly as given (not upper-cased), http(s) only, one line, no credentials
+  for (const link of ['https://app.example-tracker.com/t/123456/abc123def', 'https://example.atlassian.net/browse/ABC-123', 'http://tracker.local/issue/7?x=1#top']) {
+    assert.equal((await call('POST', U, { ticket: ` ${link} ` })).json.ticket, link, link);
+  }
+  for (const bad of ['javascript:alert(1)', 'ftp://example.com/a', 'https://user:pw@example.com/a', 'https://example.com/a b', 'https://', 'x'.repeat(501)]) {
+    assert.equal((await call('POST', U, { ticket: bad })).status, 400, bad.slice(0, 40));
+  }
   assert.equal((await call('POST', U, { ticket: '' })).json.ticket, undefined);
   const t = (await call('POST', U, { title: '  New  ', description: ' d ', notes: 'a\nb ' })).json;
   assert.deepEqual([t.title, t.description, t.notes], ['New', 'd', 'a\nb ']);
@@ -509,6 +541,34 @@ test('templates: the default Code review template is seeded once and an edited c
   // broken templates are skipped, not fatal
   const broken = boot({ prepare: (root) => { fs.mkdirSync(path.join(root, 'data', 'templates', 'bad'), { recursive: true }); fs.writeFileSync(path.join(root, 'data', 'templates', 'bad', 'template.json'), '{not json'); } });
   assert.deepEqual((await broken.call('GET', '/api/templates')).json, []);
+});
+
+test('live reload waits while the user has unsaved typed text, then reloads', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = src.match(/const LIVE_RELOAD = `<script>([\s\S]*?)<\/script>`;/)[1];
+  const make = (fields) => {
+    const handlers = {}, doc = { activeElement: null, body: { appendChild() {} }, createElement: () => ({ style: {} }), querySelectorAll: () => fields, addEventListener: (t, f) => { if (t === 'input') doc.onInput = f; } };
+    const timers = []; let reloads = 0;
+    const win = { __live: { on: (e, f) => { handlers[e] = f; } } }; win.parent = win;
+    new Function('window', 'document', 'location', 'setInterval', 'clearInterval', code)(win, doc, { reload: () => { reloads++; } }, (f) => { timers.push(f); return timers.length; }, () => {});
+    return { handlers, doc, timers, win, reloads: () => reloads };
+  };
+  const field = (o = {}) => ({ value: '', type: 'text', hasAttribute: (n) => !!o.auto && n === 'data-autosave', ...o });
+  // nothing typed: reload at once
+  let s = make([field()]); s.handlers.reload(); assert.equal(s.reloads(), 1);
+  // typed text that was not posted: wait, and reload only after it is gone
+  const draft = field({ value: 'half a sentence' }); s = make([draft]); s.doc.onInput({ target: draft });
+  s.handlers.reload(); assert.equal(s.reloads(), 0); assert.equal(s.timers.length, 1);
+  s.timers[0](); assert.equal(s.reloads(), 0, 'still typing');
+  draft.value = ''; s.timers[0](); assert.equal(s.reloads(), 1, 'posted or cleared');
+  // a field that saves when you leave it: waits only while it has focus
+  const auto = field({ value: 'description', auto: true }); s = make([auto]); s.doc.onInput({ target: auto });
+  s.doc.activeElement = auto; s.handlers.reload(); assert.equal(s.reloads(), 0, 'focused');
+  s.doc.activeElement = null; s.timers[0](); assert.equal(s.reloads(), 1, 'left the field, so it was saved');
+  // text that was set by the page (not typed) never blocks a reload
+  s = make([field({ value: 'filled in by the page' })]); s.handlers.card(); assert.equal(s.reloads(), 1);
+  // pages that refresh their own fields never reload on a card event
+  s = make([field()]); s.win.__cardLive = true; s.handlers.card(); assert.equal(s.reloads(), 0);
 });
 
 test('a card description and a task update have no character limit (a long paste is stored whole)', async () => {

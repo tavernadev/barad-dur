@@ -123,7 +123,7 @@ Whenever you change how a card looks or what a card has (the generated page temp
 files or folders a card should have), **apply it to all existing cards that are not Done or Cancelled, in the same turn, without
 being asked**, not only to new ones:
 
-- **Shared code** (`static/card.js`, `card.css`, `tasks.js`, `blocked.js`) already reaches every card on refresh. Check that old
+- **Shared code** (`static/card.js`, `card.css`, `tasks.js`, `blocked.js`, `ticket.js`) already reaches every card on refresh. Check that old
   cards still render with it.
 - **Per-card data or markup** (for example `tabs.json` and its tab files, the generated `index.html`) must be added to existing
   cards through the API where one exists (for example `POST /api/cards/<n>/tabs`), otherwise by a careful one-time script over
@@ -194,7 +194,7 @@ Repo files:
 server.js            dependency-free Node server (routes, SSE live updates, card and task APIs, migration)
 shell.html           split view: terminal iframe | content iframe, URL drives the content pane
 home.html            Topics grid and Inbox column at / (shown next to the main terminal)
-static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected), blocked.js (Blocked popup and banner),
+static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected), blocked.js (Blocked popup and banner), ticket.js (ticket label and link from a tracker link, injected),
                      live.js + live-worker.js (one shared live-update connection), favicon.png (tab icon,
                      256x256, the "Molten golden all-seeing eye" cropped tight) and barad-dur.png (the
                      official project image, 512x512, the README logo); both are the user's own generated art
@@ -263,6 +263,10 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   their fields in place so you never lose focus while editing; hand-written reports and the home page still
   reload. Anything under a card's `tasks/` emits `tasks` and refreshes only the TODO column; a card's `tabs.json`, `tabs/`,
   `artifact.json` or `artifact/` emits `tabs` and refreshes only the tab bar and the open tab.
+- **A live reload never discards typing.** The reload snippet injected into every content page waits while a field holds text the user
+  typed and has not posted or saved yet (a new-card form, a task update, the add-task box), checks again every 1.5 seconds, shows a small
+  "Updated elsewhere" note, and reloads once the field is empty or saved. Fields that save when you leave them carry `data-autosave` and only
+  wait while focused. Give a new input that saves on blur that attribute. Text set by the page itself, not typed, never blocks a reload.
 - All tabs share one live-update connection (`static/live.js` + a shared worker), because browsers allow only about
   six connections per host. Never open a new `EventSource` from page scripts; use `window.__live.on(event, fn)`.
 - Never watch a single file with `fs.watch` for reloads: on macOS it also fires on plain reads, and every reload is a read, so the page
@@ -346,13 +350,18 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **Topics:** cards being worked on. A hand-made Topics card needs `topics/<n>/card.json` (with `number` equal to the
   folder name) and an `index.html`; use the next free number from `.counter` (or create it in the Inbox and move it).
 - **Identifiers:** every card has a workspace `number` (`#1`, `#2`, ...), also its folder name; see "Where things
-  live". The Linear ticket key is optional: `ticket` in `card.json` (e.g. `ABC-123`), set from the "+ Linear ticket"
-  chip or `POST /api/cards/<n>` with `{"ticket":"ABC-123"}` (empty string removes it). Once a ticket is set, the main-page
+  live". The ticket is optional: `ticket` in `card.json`, **either a link to any tracker or a bare key**. Set it from the "+ Ticket"
+  chip or `POST /api/cards/<n>` with `{"ticket":"https://app.clickup.com/t/<workspace>/<id>"}` or `{"ticket":"ABC-123"}` (empty string removes it).
+  A link is stored exactly as given and must be `http(s)`, on one line, at most 500 characters, with no credentials in it (anything else is a 400);
+  a key is upper-cased and linked through `LINEAR_BASE_URL` when that is set. **The label is worked out from the link's address**, not stored
+  (`static/ticket.js`, shared by the main page and the card pages, so change it in that one place): ClickUp, Linear, Jira, Trello, GitHub, Asana and Shortcut
+  show the tracker's name and the item's id (for example "ClickUp 17abc"), and any other site shows its name. When a card has a ticket link,
+  **put it in the `ticket` field**, not only in the description. Once a ticket is set, the main-page
   grid shows only its link: there is deliberately no "edit" button on the grid cards, so change it there through the API or
   `card.json`. A generated card page has a **Ticket** box next to Status and Priority (`static/card.js`): the link plus a
-  pencil (✎) to change it when set, and the same "+ Linear ticket" chip as the main page when not. Both open an inline
+  pencil (✎) to change it when set, and the same "+ Ticket" chip as the main page when not. Both open an inline
   input, no popup: Enter or leaving the field saves, Escape cancels, and emptying the field of a set ticket removes it. A
-  ticket set anywhere shows up on the open card page by itself. Never treat the ticket key as the card's unique ID.
+  ticket set anywhere shows up on the open card page by itself. Never treat the ticket as the card's unique ID.
 - Allowed values (defined in `server.js`, `OPTIONS`):
   - status: Pending, Scoping, In Progress, Blocked, Code Review, Testing, Done, Cancelled (a card or task that will not be done; it only changes the status, the folder does not move)
   - **Blocked and Cancelled always have a reason** (`blockedReason` / `cancelledReason` in `card.json`, at most 1000 characters each),

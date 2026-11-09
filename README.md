@@ -42,7 +42,7 @@ All settings are environment variables; a local `.env` is loaded if present (see
 | `TTYD_CLOSE_SIGNAL` | `SIGKILL` | Signal sent to a session when its browser tab closes. The default `SIGHUP` left Claude Code running in the background |
 | `TTYD_BACKGROUND` | `#000000` | Terminal background color (hex) |
 | `DATA_DIR` | `data` | Where your private data lives (`inbox/`, `topics/`, `.sessions/`, `.counter`): a folder inside the repo (relative to the repo folder) or a full path like `/home/you/barad-dur-data` or `~/barad-dur-data` |
-| `LINEAR_BASE_URL` | empty | Ticket links, e.g. `https://linear.app/<workspace>/issue/` |
+| `LINEAR_BASE_URL` | empty | Only for bare ticket keys such as `ABC-123`: the base they are linked to, e.g. `https://linear.app/<workspace>/issue/`. A pasted ticket link (ClickUp, Linear, Jira, Trello, ...) needs no setting |
 | `CLAUDE_BIN` | `claude` | Claude Code executable |
 | `GH_BIN` | `gh` | GitHub CLI, used by card templates to read a pull request (read-only) |
 | `CODE_BIN` | `code` | VS Code command, run by the header's Settings > Open in VS Code |

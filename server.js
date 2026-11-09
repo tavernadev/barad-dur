@@ -146,6 +146,12 @@ function addTab(dir, title) {
 // artifact.json = { url, title, savedAt } and the saved copy of the page is artifact/index.html. The server never creates one;
 // a card session publishes and attaches it in the same turn, only when the user asks for an artifact. The saved page is untrusted data and is rendered sandboxed.
 const ARTIFACT_URL = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+(?:\?[A-Za-z0-9_=&.-]*)?$/;
+// A ticket can be a link to any tracker (ClickUp, Linear, Jira, Trello, ...): http(s), one line, no credentials in it. The page works out the label.
+const isTicketLink = (v) => {
+  const t = typeof v === 'string' ? v.trim() : '';
+  if (!t || t.length > 500 || /\s/.test(t)) return false;
+  try { const u = new URL(t); return (u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password; } catch { return false; }
+};
 const MAX_ARTIFACT = 6 * 1024 * 1024;
 const MAX_TEXT_BODY = 16 * 1024 * 1024; // request-size safety net for text fields (card description, task updates): there is no character limit on them
 function readArtifact(dir) {
@@ -378,8 +384,32 @@ const LIVE_RELOAD = `<script>(function(){
       }
     });
   }
-  window.__live.on('reload', function () { location.reload(); });
-  window.__live.on('card', function () { if (!window.__cardLive) location.reload(); });
+  // Never reload under someone who is typing. While a field holds text the user typed and has not posted or saved yet,
+  // wait (checking every 1.5 s) and reload once it is empty or saved. Fields marked data-autosave save when you leave them.
+  var edited = new WeakSet();
+  document.addEventListener('input', function (e) { edited.add(e.target); }, true);
+  function hasDraft() {
+    var els = document.querySelectorAll('input, textarea');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!edited.has(el) || el.value === '' || /^(checkbox|radio|hidden)$/.test(el.type)) continue;
+      if (el.hasAttribute('data-autosave') && document.activeElement !== el) continue;
+      return true;
+    }
+    return false;
+  }
+  var waiting = null;
+  function safeReload() {
+    if (!hasDraft()) return location.reload();
+    if (waiting) return;
+    var n = document.createElement('div');
+    n.textContent = 'Updated elsewhere. This page refreshes when you finish typing.';
+    n.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:99999;padding:6px 10px;border-radius:6px;font:12px system-ui,sans-serif;background:#222;color:#eee;opacity:.9;pointer-events:none';
+    document.body.appendChild(n);
+    waiting = setInterval(function () { if (!hasDraft()) { clearInterval(waiting); location.reload(); } }, 1500);
+  }
+  window.__live.on('reload', safeReload);
+  window.__live.on('card', function () { if (!window.__cardLive) safeReload(); });
 })();</script>`;
 
 const clients = new Set();
@@ -674,7 +704,7 @@ http.createServer((req, res) => {
     if (!card) return send(res, 404, 'Not found');
     return readJson(req, res, (changes) => {
       const fields = Object.keys(changes);
-      const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
+      const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()) || isTicketLink(v)); // a key (ABC-123) or a link to any tracker
       const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : (f === 'notes' ? v.length <= 20000 : true)); // the description has no length limit
       const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || ((f === 'inbox' || f === 'taskProgress') && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f])) || (LINK_FIELDS[f] && linkOk(f, changes[f]))
         || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]))
@@ -694,7 +724,7 @@ http.createServer((req, res) => {
         if (f === 'title' || f === 'description' || Object.values(REASON_FIELD).includes(f)) meta[f] = changes[f].trim();
         else if (LINK_FIELDS[f]) { if (changes[f].trim()) meta[f] = changes[f].trim(); else delete meta[f]; }
         else if (f !== 'ticket') meta[f] = changes[f];
-        else if (changes[f].trim()) meta.ticket = changes[f].trim().toUpperCase(); // Linear key, e.g. ABC-123
+        else if (changes[f].trim()) meta.ticket = isTicketLink(changes[f]) ? changes[f].trim() : changes[f].trim().toUpperCase(); // a link is kept as given; a key is upper-cased, e.g. ABC-123
         else delete meta.ticket;
       });
       delete meta.inbox;
@@ -726,7 +756,7 @@ http.createServer((req, res) => {
     const file = path.join(card.dir, m[2] || 'index.html');
     if (!file.startsWith(card.dir + path.sep)) return send(res, 403, 'Forbidden'); // stay inside the card's folder
     const isReport = file === path.join(card.dir, 'index.html');
-    return sendFile(res, file, true, isReport ? '<script src="/static/blocked.js" defer></script><script src="/static/tasks.js" defer></script>' : '');
+    return sendFile(res, file, true, isReport ? '<script src="/static/ticket.js"></script><script src="/static/blocked.js" defer></script><script src="/static/tasks.js" defer></script>' : '');
   }
   send(res, 404, 'Not found');
 }).listen(PORT, HOST, () => console.log(`${CONFIG.appName}: http://${HOST}:${PORT}/`));

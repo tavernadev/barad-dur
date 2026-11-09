@@ -30,6 +30,7 @@
   function bind(name, el) {
     inputs[name] = el;
     el.classList.add('edit');
+    el.setAttribute('data-autosave', ''); // saved when you leave it: a live reload may wait while it is focused, never after
     el.addEventListener('input', function () { grow(el); });
     el.addEventListener('blur', function () {
       var v = name === 'notes' ? el.value : el.value.trim();
@@ -194,7 +195,7 @@
   }
   function buildTabs() { fetchTabs().then(function (list) { renderTabs(list); loadTabContent(); }); }
 
-  // ---------- Linear ticket (optional; the main page shows and sets it the same way) ----------
+  // ---------- Ticket: a link to ClickUp, Linear, Jira, Trello... or a key like ABC-123 (optional; the main page shows and sets it the same way) ----------
   var linearBase = '', ticketBox = null;
   function buildTicket() {
     var meta = document.querySelector('.meta');
@@ -203,12 +204,12 @@
     ticketBox.innerHTML = '<b>Ticket</b><span class="tk-slot"></span>';
     meta.appendChild(ticketBox);
   }
-  // Inline editor shared by the "+ Linear ticket" chip and the pencil: Enter or leaving the field saves, Escape cancels.
+  // Inline editor shared by the "+ Ticket" chip and the pencil: Enter or leaving the field saves, Escape cancels.
   // On a card that has a ticket, saving an empty field removes it; on one without, empty just cancels.
   function editTicket(slot, current) {
     var input = document.createElement('input');
-    input.className = 'tk-input'; input.placeholder = 'ABC-123'; input.maxLength = 30; input.value = current || '';
-    input.setAttribute('aria-label', 'Linear ticket key');
+    input.className = 'tk-input'; input.placeholder = 'Paste a ticket link or key'; input.maxLength = 500; input.value = current || '';
+    input.setAttribute('aria-label', 'Ticket link or key');
     slot.textContent = ''; slot.appendChild(input); input.focus(); input.select();
     var done = false;
     var finish = function (commit) {
@@ -217,7 +218,7 @@
       slot.textContent = '';
       if (!commit || v === (current || '')) { renderTicket(card); return; }
       save({ ticket: v }).then(function (c2) {
-        if (c2) renderTicket(c2); else { say('Not a valid ticket key (like ABC-123)', true); renderTicket(card); }
+        if (c2) renderTicket(c2); else { say('Not a valid ticket: paste a link (ClickUp, Linear, Jira, Trello...) or a key like ABC-123', true); renderTicket(card); }
       });
     };
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); });
@@ -229,9 +230,10 @@
     if (slot.querySelector('input')) return; // being edited: leave it alone
     slot.textContent = '';
     if (c.ticket) { // set: the link, and a pencil to change or clear it
-      var el = document.createElement(linearBase ? 'a' : 'span');
-      el.className = 'ticket'; el.textContent = c.ticket;
-      if (linearBase) { el.href = linearBase + encodeURIComponent(c.ticket); el.target = '_blank'; el.rel = 'noopener'; el.title = 'Open in Linear'; }
+      var info = window.ticketInfo ? window.ticketInfo(c.ticket, linearBase) : { label: c.ticket, href: '', title: '' };
+      var el = document.createElement(info.href ? 'a' : 'span');
+      el.className = 'ticket'; el.textContent = info.label;
+      if (info.href) { el.href = info.href; el.target = '_blank'; el.rel = 'noopener'; el.title = info.title; }
       var pencil = document.createElement('button');
       pencil.type = 'button'; pencil.className = 'tk-edit'; pencil.textContent = '\u270e';
       pencil.title = 'Change ticket (empty removes it)'; pencil.setAttribute('aria-label', 'Change ticket');
@@ -239,8 +241,8 @@
       slot.appendChild(el); slot.appendChild(pencil);
       return;
     }
-    var btn = document.createElement('button'); // not set: the same "+ Linear ticket" chip as the main page
-    btn.type = 'button'; btn.className = 'tk'; btn.textContent = '+ Linear ticket';
+    var btn = document.createElement('button'); // not set: the same "+ Ticket" chip as the main page
+    btn.type = 'button'; btn.className = 'tk'; btn.textContent = '+ Ticket';
     btn.addEventListener('click', function () { editTicket(slot, ''); });
     slot.appendChild(btn);
   }

@@ -270,7 +270,7 @@
   function buildCard() {
     card.innerHTML =
       '<header><strong class="ct"></strong><button type="button" class="x" aria-label="Close" title="Close (Esc)">×</button></header>' +
-      '<input class="ttl" maxlength="300" aria-label="Title">' +
+      '<input class="ttl" data-autosave maxlength="300" aria-label="Title">' +
       '<div class="props">' +
       '<label>Status<select data-k="status"></select></label>' +
       '<label>Priority<select data-k="priority"></select></label>' +
