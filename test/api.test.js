@@ -794,6 +794,71 @@ test('delete for good: erases one session everywhere Claude keeps it, and nothin
   assert.equal(fs.existsSync(path.join(A, n2)), true, 'the other archived session survived all of that');
 });
 
+test('session lock and archive: two independent marks; a locked session cannot be deleted; marks follow the session', async () => {
+  const { call, data } = boot();
+  const S = path.join(data, '.sessions'), A = path.join(S, 'archive'); fs.mkdirSync(A, { recursive: true });
+  const n1 = 'main-20260101T000000Z';
+  fs.writeFileSync(path.join(A, n1), 'x\n'); fs.writeFileSync(path.join(S, 'main'), 'y\n');
+  const hist = async () => (await call('GET', '/api/sessions/main/history')).json;
+  // archive and lock are independent
+  assert.equal((await call('POST', '/api/sessions/main/keep', { name: n1, kept: true })).status, 200);
+  let h = await hist(); assert.deepEqual([h.archived[0].kept, h.archived[0].locked], [true, false]);
+  assert.equal((await call('POST', '/api/sessions/main/lock', { name: n1, locked: true })).status, 200);
+  h = await hist(); assert.deepEqual([h.archived[0].kept, h.archived[0].locked], [true, true]);
+  // locked: delete is refused (423) and nothing is removed; unlocked: it goes
+  assert.equal((await call('POST', '/api/sessions/main/delete', { name: n1 })).status, 423);
+  assert.equal(fs.existsSync(path.join(A, n1)), true);
+  await call('POST', '/api/sessions/main/lock', { name: n1, locked: false });
+  assert.equal((await hist()).archived[0].locked, false);
+  // the current session can be locked, and the lock follows it into the archive on New session
+  assert.equal((await call('POST', '/api/sessions/main/lock', { locked: true })).status, 200);
+  assert.equal((await hist()).current.locked, true);
+  assert.equal((await call('POST', '/api/sessions/main/delete', {})).status, 423);
+  const reset = await call('POST', '/api/sessions/main/reset', {});
+  h = await hist(); const moved = h.archived.find((x) => x.name === reset.json.archived);
+  assert.deepEqual([moved.locked, moved.kept], [true, false]);
+  // archiving the current one files it straight into Archived
+  fs.writeFileSync(path.join(S, 'main'), 'z\n');
+  const k = await call('POST', '/api/sessions/main/keep', {});
+  assert.deepEqual([k.status, k.json.kept], [200, true]);
+  assert.equal((await hist()).archived.find((x) => x.name === k.json.archived).kept, true);
+  // switching one back makes it the current session again (no longer archived), keeping its lock
+  await call('POST', '/api/sessions/main/switch', { name: reset.json.archived });
+  h = await hist(); assert.equal(h.current.locked, true);
+  assert.equal(h.archived.some((x) => x.name === reset.json.archived), false);
+  // bad input
+  assert.equal((await call('POST', '/api/sessions/main/lock', { name: n1, locked: 'yes' })).status, 400);
+  assert.equal((await call('POST', '/api/sessions/main/lock', { name: '../main', locked: true })).status, 404);
+  assert.equal((await call('POST', '/api/sessions/main/keep', { name: n1, kept: 1 })).status, 400);
+  assert.equal((await call('POST', '/api/sessions/1/lock', { name: n1, locked: true })).status, 404);
+  assert.equal((await call('POST', '/api/sessions/main/lock', { locked: true }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await call('GET', '/api/sessions/main/lock')).status, 405);
+});
+
+test('session rename: your own title wins, follows the session, and an empty one restores the generated label', async () => {
+  const { call, data } = boot();
+  const S = path.join(data, '.sessions'), A = path.join(S, 'archive'); fs.mkdirSync(A, { recursive: true });
+  const n1 = 'main-20260101T000000Z';
+  fs.writeFileSync(path.join(A, n1), 'x\n'); fs.writeFileSync(path.join(S, 'main'), 'y\n');
+  const hist = async () => (await call('GET', '/api/sessions/main/history')).json;
+  assert.equal((await call('POST', '/api/sessions/main/rename', { name: n1, title: '  Fix   the\nlogin  ' })).json.title, 'Fix the login');
+  let h = await hist(); assert.deepEqual([h.archived[0].label, h.archived[0].renamed], ['Fix the login', true]);
+  assert.equal((await call('POST', '/api/sessions/main/rename', { title: 'Main work' })).status, 200);
+  assert.equal((await hist()).current.label, 'Main work');
+  const reset = await call('POST', '/api/sessions/main/reset', {});
+  assert.equal((await hist()).archived.find((x) => x.name === reset.json.archived).label, 'Main work', 'the name follows the session into the archive');
+  await call('POST', '/api/sessions/main/switch', { name: reset.json.archived });
+  assert.equal((await hist()).current.label, 'Main work', 'and back');
+  await call('POST', '/api/sessions/main/rename', { name: n1, title: '' });
+  h = await hist(); assert.equal(h.archived.find((x) => x.name === n1).renamed, false);
+  assert.equal((await call('POST', '/api/sessions/main/rename', { name: n1, title: 5 })).status, 400);
+  assert.equal((await call('POST', '/api/sessions/main/rename', { name: '../main', title: 'a' })).status, 404);
+  assert.equal((await call('POST', '/api/sessions/main/rename', { title: 'a' }, { origin: 'http://evil.example' })).status, 403);
+  await call('POST', '/api/sessions/main/rename', { name: n1, title: 'gone soon' });
+  await call('POST', '/api/sessions/main/delete', { name: n1 });
+  assert.equal(fs.existsSync(path.join(A, n1 + '.title')), false, 'deleting removes the name too');
+});
+
 test('new session end to end: after a reset the launcher starts a fresh session, keeps the old id, and leaves other tabs alone', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-newsess-'));
   const data = path.join(tmp, 'data');

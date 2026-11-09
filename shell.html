@@ -29,7 +29,7 @@
   #settings-pop .note.bad { color:#f85149; }
   .icon-btn { width:34px; height:34px; display:flex; align-items:center; justify-content:center; padding:0; }
   .icon-btn svg { width:20px; height:20px; display:block; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-  #split { display:flex; flex:1 1 0; min-height:0; width:100%; }
+  #split { position:relative; display:flex; flex:1 1 0; min-height:0; width:100%; }
   #left  { flex:0 0 var(--left, 50%); min-width:200px; display:flex; flex-direction:column; }
   /* Slim bar above the terminal: which session this terminal is, and a button to start a new one. It acts on this tab's session only. */
   #termbar { flex:0 0 30px; display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:0 8px 0 12px; background:#161b22; border-bottom:1px solid var(--line); color:#8b949e; font:12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
@@ -57,6 +57,10 @@
   #sess-pop .row { display:block; flex:1 1 auto; min-width:0; text-align:left; padding:7px 8px; font:inherit; color:inherit; background:none; border:1px solid transparent; border-radius:8px; cursor:pointer; }
   #sess-pop .rm { flex:none; width:30px; display:flex; align-items:center; justify-content:center; padding:0; color:#8b949e; background:none; border:1px solid transparent; border-radius:8px; cursor:pointer; }
   #sess-pop .rm svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; display:block; }
+  #sess-pop .rm.tool:hover { color:#e6edf3; }
+  #sess-pop .rm.on { color:#d29922; }
+  #sess-pop .rm.lk svg, #sess-pop .rm.ar svg { stroke-linejoin:round; }
+  #sess-pop h4.sub { margin-top:10px; padding-top:8px; border-top:1px solid var(--line); }
   #sess-pop .rm:hover { color:#f85149; background:#21262d; border-color:var(--line); }
   #sess-pop .rm:focus-visible { outline:2px solid var(--accent); }
   #sess-pop .row:hover:not(:disabled) { background:#21262d; border-color:var(--line); }
@@ -70,6 +74,15 @@
   #right { flex:1 1 0; min-width:200px; }
   iframe { width:100%; height:100%; border:0; display:block; background:var(--bg); }
   #gutter { flex:0 0 8px; cursor:col-resize; background:var(--line); transition:background .15s; touch-action:none; }
+  /* Collapse the terminal: it is moved off screen at its current size instead of hidden, so it keeps running and never resizes (a zero-size terminal would squash Claude's screen). */
+  #gutter { position:relative; }
+  #left.collapsed { position:absolute; top:0; bottom:0; left:-200vw; width:var(--collw, 50vw); visibility:hidden; pointer-events:none; }
+  body.termoff #gutter { cursor:default; }
+  #fold { position:absolute; top:50%; left:50%; z-index:30; width:18px; height:48px; margin:-24px 0 0 -9px; display:flex; align-items:center; justify-content:center; padding:0; color:#c9d1d9; background:#21262d; border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+  #fold:hover { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #fold:focus-visible { outline:2px solid var(--accent); }
+  #fold svg { width:12px; height:12px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; display:block; transition:transform .15s; }
+  body.termoff #fold svg { transform:rotate(180deg); }
   #gutter:hover, body.dragging #gutter { background:var(--accent); }
   /* While dragging, stop iframes from swallowing mouse events */
   body.dragging iframe { pointer-events:none; }
@@ -110,7 +123,9 @@
     <div id="sess-pop" hidden role="menu" aria-label="Sessions"></div>
     <iframe id="term" title="Terminal"></iframe>
   </div>
-  <div id="gutter" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
+  <div id="gutter" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset">
+    <button id="fold" type="button" title="Hide the terminal" aria-label="Hide the terminal" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg></button>
+  </div>
   <div id="right"><iframe id="content" title="Content"></iframe></div>
 </div>
 <script src="/static/dialog.js"></script>
@@ -234,10 +249,64 @@
     const x = document.createElement('button'); // delete for good (a separate button: a button cannot hold another button)
     x.type = 'button'; x.className = 'rm'; x.title = 'Delete this session for good'; x.setAttribute('aria-label', 'Delete this session for good: ' + (e.label || 'no title found'));
     x.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
-    x.addEventListener('click', () => erase(e, current, id, wrap));
-    wrap.append(b, x);
+    x.addEventListener('click', () => e.locked ? baradDialog.notice({ title: 'This session is locked', items: ['Unlock it first, then delete it.'] }) : erase(e, current, id, wrap));
+    const tool = (cls, tip, svg, on) => { // lock and archive: two separate controls next to delete
+      const k = document.createElement('button'); k.type = 'button'; k.className = 'rm tool ' + cls + (on ? ' on' : ''); k.title = tip; k.setAttribute('aria-label', tip); k.setAttribute('aria-pressed', String(!!on));
+      k.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + svg + '</svg>'; return k;
+    };
+    const lockSvg = e.locked ? '<rect x="5" y="11" width="14" height="9" rx="2" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>' : '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.9"/>';
+    const lk = tool('lk', e.locked ? 'Locked: cannot be deleted. Click to unlock' : 'Lock: prevent this session from being deleted', lockSvg, e.locked);
+    lk.addEventListener('click', () => toggle(e, current, id, 'lock', !e.locked));
+    const ar = tool('ar', e.kept ? 'Archived. Click to move back to the list' : current ? 'Archive: end this session and keep it in the Archived section' : 'Archive: move to the Archived section',
+      '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/>', e.kept);
+    ar.addEventListener('click', () => current ? archiveCurrent(id) : toggle(e, current, id, 'keep', !e.kept));
+    const ed = tool('ed', 'Rename: give this session a clearer title', '<path d="M4 20l4-1 11-11-3-3L5 16l-1 4z"/><path d="M14 6l3 3"/>', e.renamed);
+    ed.addEventListener('click', () => rename(e, current, id, b));
+    wrap.append(b, ed, lk, ar, x);
     return wrap;
   };
+  // Lock and Archive are independent. Both only add or remove a mark on the session (nothing is moved or erased), then the list reloads.
+  async function toggle(e, current, id, what, on) {
+    try {
+      const body = current ? { locked: on } : what === 'lock' ? { name: e.name, locked: on } : { name: e.name, kept: on };
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/' + what, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(String(r.status));
+      loadList(id);
+    } catch (_) { baradDialog.notice({ title: 'Could not change the session', items: ['Try again, or reload this tab.'] }); }
+  }
+  // Rename: the title turns into an input in place. Enter or leaving the field saves, Escape cancels, an empty name goes back to the generated one.
+  function rename(e, current, id, rowBtn) {
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.value = e.renamed ? e.label : ''; inp.placeholder = e.auto || 'Name this session'; inp.maxLength = 200; inp.setAttribute('aria-label', 'Session title');
+    inp.style.cssText = 'flex:1 1 auto;min-width:0;margin:0;padding:6px 8px;font:inherit;font-weight:600;color:#e6edf3;background:#0d1117;border:1px solid var(--accent);border-radius:8px;outline:none';
+    let done = false;
+    const finish = async (save) => {
+      if (done) return; done = true;
+      if (save && inp.value.trim() !== (e.renamed ? e.label : '')) {
+        try {
+          const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(current ? { title: inp.value } : { name: e.name, title: inp.value }) });
+          if (!r.ok) throw new Error(String(r.status));
+        } catch (_) { baradDialog.notice({ title: 'Could not rename the session', items: ['Try again, or reload this tab.'] }); }
+      }
+      loadList(id);
+    };
+    inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); finish(true); } else if (ev.key === 'Escape') { ev.stopPropagation(); finish(false); } });
+    inp.addEventListener('blur', () => finish(true));
+    rowBtn.replaceWith(inp); inp.focus(); inp.select();
+  }
+  // Archiving the session that is running: it ends and is filed in the Archived section; the terminal starts a fresh one (like New session).
+  async function archiveCurrent(id) {
+    const ok = await baradDialog.confirm({ title: 'Archive the current session?', who: id === 'main' ? 'Main session' : 'Card #' + id, confirmText: 'Archive and start fresh',
+      items: ['The conversation is kept in the Archived section; you can switch back to it any time.', 'Anything Claude is doing right now stops, and the terminal starts a new session.'] });
+    if (!ok) return;
+    closeSess(); switchBtn.disabled = newBtn.disabled = true;
+    try {
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/keep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) throw new Error(String(r.status));
+      restartTerm();
+    } catch (_) { baradDialog.notice({ title: 'Could not archive the session', items: ['Try again, or reload this tab.'] }); }
+    switchBtn.disabled = newBtn.disabled = false;
+  }
   // Delete for good: the server erases the stored session id and every file Claude keeps for it, so it is gone from `claude --resume` too.
   // The session running in this terminal is ended first (a closed terminal ends its Claude process), and the terminal then starts a fresh one.
   async function erase(e, current, id, wrap) {
@@ -254,11 +323,11 @@
     try {
       if (current) { term.src = 'about:blank'; await new Promise((r) => setTimeout(r, 900)); } // end the running Claude before its files go
       const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(current ? {} : { name: e.name }) });
+      if (r.status === 423) { if (current) restartTerm(); baradDialog.notice({ title: 'This session is locked', items: ['Unlock it first, then delete it.'] }); switchBtn.disabled = newBtn.disabled = false; return; }
       if (!r.ok) throw new Error(String(r.status));
       if (current) restartTerm();
       else {
-        wrap.remove();
-        if (!sessPop.querySelector('[data-archived]')) { const n = document.createElement('div'); n.className = 'msg'; n.textContent = 'No earlier sessions yet. After New session, the one you leave shows up here.'; sessPop.appendChild(n); }
+        loadList(id);
       }
     } catch (_) {
       if (current) restartTerm();
@@ -283,12 +352,8 @@
     } catch (_) { baradDialog.notice({ title: 'Could not switch the session', items: ['Try again, or reload this tab.'] }); }
     switchBtn.disabled = newBtn.disabled = false;
   }
-  switchBtn.addEventListener('click', async (ev) => {
-    ev.stopPropagation();
-    if (!sessPop.hidden) return closeSess();
-    const id = termId || sessionFor(location.pathname);
-    sessPop.hidden = false; switchBtn.setAttribute('aria-expanded', 'true');
-    sessPop.textContent = ''; const loading = document.createElement('div'); loading.className = 'msg'; loading.textContent = 'Loading...'; sessPop.appendChild(loading);
+  const emptyNote = (text) => { const n = document.createElement('div'); n.className = 'msg'; n.textContent = text; return n; };
+  async function loadList(id) {
     try {
       const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/history');
       if (!r.ok) throw new Error(String(r.status));
@@ -296,9 +361,22 @@
       sessPop.textContent = '';
       const head = document.createElement('h4'); head.textContent = id === 'main' ? 'Main sessions' : 'Sessions of card #' + id; sessPop.appendChild(head);
       if (h.current) sessPop.appendChild(row(h.current, true, id));
-      h.archived.forEach((e) => sessPop.appendChild(row(e, false, id)));
-      if (!h.archived.length) { const n = document.createElement('div'); n.className = 'msg'; n.textContent = 'No earlier sessions yet. After New session, the one you leave shows up here.'; sessPop.appendChild(n); }
+      const earlier = h.archived.filter((e) => !e.kept), kept = h.archived.filter((e) => e.kept);
+      earlier.forEach((e) => sessPop.appendChild(row(e, false, id)));
+      if (!earlier.length) { const n = emptyNote('No earlier sessions yet. After New session, the one you leave shows up here.'); n.dataset.empty = '1'; sessPop.appendChild(n); }
+      if (kept.length) {
+        const sub = document.createElement('h4'); sub.className = 'sub'; sub.textContent = 'Archived'; sessPop.appendChild(sub);
+        kept.forEach((e) => sessPop.appendChild(row(e, false, id)));
+      }
     } catch (_) { sessPop.textContent = ''; const bad = document.createElement('div'); bad.className = 'msg bad'; bad.textContent = 'Could not load the sessions.'; sessPop.appendChild(bad); }
+  }
+  switchBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!sessPop.hidden) return closeSess();
+    const id = termId || sessionFor(location.pathname);
+    sessPop.hidden = false; switchBtn.setAttribute('aria-expanded', 'true');
+    sessPop.textContent = ''; sessPop.appendChild(emptyNote('Loading...'));
+    loadList(id);
   });
   document.addEventListener('click', (ev) => { if (!sessPop.hidden && !sessPop.contains(ev.target) && !switchBtn.contains(ev.target)) closeSess(); });
   window.addEventListener('blur', closeSess); // a click inside the terminal or content frame moves focus there
@@ -330,6 +408,7 @@
 
   let dragging = false;
   gutter.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#fold') || document.body.classList.contains('termoff')) return;
     dragging = true;
     gutter.setPointerCapture(e.pointerId);
     document.body.classList.add('dragging');
@@ -347,7 +426,18 @@
   };
   gutter.addEventListener('pointerup', stop);
   gutter.addEventListener('pointercancel', stop);
-  gutter.addEventListener('dblclick', () => { apply(50); localStorage.setItem(KEY, 50); });
+  gutter.addEventListener('dblclick', (e) => { if (e.target.closest('#fold') || document.body.classList.contains('termoff')) return; apply(50); localStorage.setItem(KEY, 50); });
+  // Collapse / expand the terminal (remembered). The terminal keeps running while hidden.
+  const FOLD = 'workspace.termCollapsed', leftEl = document.getElementById('left'), fold = document.getElementById('fold');
+  const setFold = (off) => {
+    if (off) leftEl.style.setProperty('--collw', leftEl.offsetWidth + 'px'); // keep its size while off screen
+    leftEl.classList.toggle('collapsed', off); document.body.classList.toggle('termoff', off);
+    fold.title = fold.ariaLabel = off ? 'Show the terminal' : 'Hide the terminal'; fold.setAttribute('aria-expanded', String(!off));
+    gutter.style.cursor = off ? 'default' : '';
+    localStorage.setItem(FOLD, off ? '1' : '0');
+  };
+  fold.addEventListener('click', () => setFold(!document.body.classList.contains('termoff')));
+  if (localStorage.getItem(FOLD) === '1') setFold(true);
 </script>
 </body>
 </html>

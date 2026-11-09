@@ -301,6 +301,9 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   injected `static/tasks.js` removes a page's `href="/"` nav link when it runs inside the shell). Right: the menu buttons; today only a **Settings** gear, which opens a small menu with **Open in VS Code**. That item calls
   `POST /api/open-vscode`, and the server runs `CODE_BIN` (default `code`) on the project's own folder with fixed arguments, no shell, and the same
   write guards as the card API; the folder is never taken from the request. Add new menu entries to the `#bar` `nav` (or this menu), not to individual pages.
+- **The terminal can be collapsed.** A small handle button sits on the gutter between the terminal and the content; clicking it hides the terminal (and clicking
+  again shows it), and the choice is remembered in the browser (`workspace.termCollapsed`). The terminal is moved off screen at its current size, never set to
+  `display:none` or zero width, so it keeps running and Claude's screen is not squashed; dragging and double-click on the gutter are off while it is hidden.
 - **Tab titles say which session a tab is:** `<APP_NAME> - main` on the home tab and `<APP_NAME> - #<n>` on a card's tab
   (set in `shell.html`, so several tabs are easy to tell apart).
 - Clicking a card on the main page opens `/card/<n>` in a **new browser tab** named `card-<n>`; the home tab is
@@ -356,8 +359,20 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
     (`sessions/`) is left alone. For the current session the page first closes the terminal (which ends that Claude process, so it cannot write
     again) and the server sweeps once more 2.5 seconds later in case a closing process wrote one last time. **Tests must use a scratch
     `CLAUDE_CONFIG_DIR`**, never the real `~/.claude`.
-  - **API:** `GET /api/sessions/<id>` (stored? adopted?), `GET .../history` (`{current, archived:[{name, at, label, summary, updated, adopted, resumeId}]}`),
-    `POST .../reset`, `POST .../switch`, `POST .../delete`. `<id>` is only `main` or the number of an existing card (else 404); a switch `name` must match
+  - **Lock and Archive (two independent buttons on every row, next to the X, in the order lock, archive, X).** Each is a marker file beside the session
+    file, so nothing is moved or erased: `<file>.lock` and `<file>.kept` (in `.sessions/archive/`; for the current session only `.sessions/<id>.lock`).
+    - **Lock:** a locked session cannot be deleted; `POST .../delete` answers 423 and removes nothing, and the page shows a notice. Unlock with the same
+      icon (filled when locked). The lock follows the session when it is archived by New session or brought back by Switch.
+    - **Archive:** the dropdown lists the earlier sessions first, then an **Archived** section below it with the sessions marked kept (a conservation
+      history). On an earlier session the button files it there, or takes it back out. On the current session it ends it and files it straight into Archived,
+      then the terminal starts a fresh one (like New session, with a confirmation). Switching an archived session back in clears its kept mark.
+    - Lock and Archive do not depend on each other; a session can have either, both or neither.
+  - **Rename (a pencil, left of the lock, on every row).** The title turns into an input in place: Enter or leaving the field saves, Escape cancels, and an empty
+    name goes back to the generated label. The name is a marker file `<file>.title` (at most 200 characters), shown instead of the generated label, and it
+    follows the session through New session, Switch and Archive; deleting the session removes it.
+  - **API:** `GET /api/sessions/<id>` (stored? adopted?), `GET .../history` (`{current, archived:[{name, at, label, summary, updated, adopted, locked, kept, renamed, auto, resumeId}]}`),
+    `POST .../reset`, `POST .../switch`, `POST .../delete`, `POST .../lock` (`{name?, locked: boolean}`, no name = the current session) and
+    `POST .../keep` (`{name, kept: boolean}`; no name archives the current session) and `POST .../rename` (`{name?, title}`, empty title clears it). `<id>` is only `main` or the number of an existing card (else 404); a switch `name` must match
     `<id>-<UTC time>` for that same id (never a path, and never another id's archive); the write guards are the same as the card API.
   - To resume outside the app: `claude --resume <resumeId>`. The Settings gear stays for app-wide actions and does not carry these.
 

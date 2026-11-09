@@ -52,7 +52,7 @@ const CONFIG = {
 const isNumber = (s) => /^\d+$/.test(s);
 // "New session" (the bar above the terminal): move a session's stored id (and its adopted directory, if any) into .sessions/archive/ so the
 // next terminal start for that tab begins a new conversation. Nothing is deleted: the old id stays there and `claude --resume <id>` still works.
-function archiveSession(id) {
+function archiveSession(id, keep) {
   const file = path.join(SESSIONS, id);
   if (!fs.existsSync(file)) return null;
   const dir = path.join(SESSIONS, 'archive');
@@ -63,6 +63,9 @@ function archiveSession(id) {
   let uuid = ''; try { uuid = fs.readFileSync(file, 'utf8').split('\n')[0].trim(); } catch { /* unreadable: no summary */ }
   fs.renameSync(file, path.join(dir, name));
   if (fs.existsSync(file + '.cwd')) fs.renameSync(file + '.cwd', path.join(dir, name + '.cwd'));
+  if (fs.existsSync(file + '.lock')) fs.renameSync(file + '.lock', path.join(dir, name + '.lock')); // a lock follows its session
+  if (fs.existsSync(file + '.title')) fs.renameSync(file + '.title', path.join(dir, name + '.title')); // so does a name you gave it
+  if (keep) fs.writeFileSync(path.join(dir, name + '.kept'), '\n'); // filed straight into the Archived section
   saveSummary(path.join(dir, name), uuid); // the one-line "what it was doing", written now so nothing has to keep it up to date
   return name;
 }
@@ -164,8 +167,9 @@ function deleteSession(id, name) {
   const file = current ? path.join(SESSIONS, id) : path.join(SESSIONS, 'archive', name);
   if (!fs.existsSync(file)) return null;
   let uuid = ''; try { uuid = fs.readFileSync(file, 'utf8').split('\n')[0].trim(); } catch { /* unreadable: only our own files go */ }
+  if (fs.existsSync(file + '.lock')) return { locked: true }; // a locked session cannot be deleted until it is unlocked
   const adopted = fs.existsSync(file + '.cwd');
-  for (const f of [file, file + '.cwd', file + '.summary']) { try { fs.rmSync(f, { force: true }); } catch { /* leave it */ } }
+  for (const f of [file, file + '.cwd', file + '.summary', file + '.lock', file + '.kept', file + '.title']) { try { fs.rmSync(f, { force: true }); } catch { /* leave it */ } }
   const erased = eraseClaudeSession(uuid);
   // The terminal of a running session is closed first, but a process that is still ending may write its transcript once more: sweep again shortly after.
   if (current && uuid) { const t = setTimeout(() => eraseClaudeSession(uuid), 2500); if (t.unref) t.unref(); }
@@ -194,9 +198,13 @@ function sessionLabel(uuid) {
 const ARCHIVE_NAME = (id) => new RegExp('^' + id + '-(\\d{8})T(\\d{6})Z(?:-\\d+)?$');
 function sessionHistory(id) {
   const read = (f) => { try { return fs.readFileSync(f, 'utf8').split('\n')[0].trim(); } catch { return ''; } };
-  const entry = (extra, uuid) => ({ ...extra, resumeId: uuid, ...sessionLabel(uuid) });
+  // A name you typed (<file>.title) wins over the generated label; `auto` keeps the generated one so the page can offer it when you clear the name.
+  const entry = (extra, uuid, file) => {
+    const l = sessionLabel(uuid), custom = read(file + '.title');
+    return { ...extra, resumeId: uuid, ...l, label: custom || l.label, auto: l.label, renamed: !!custom };
+  };
   const cur = path.join(SESSIONS, id);
-  const current = fs.existsSync(cur) ? entry({ adopted: fs.existsSync(cur + '.cwd') }, read(cur)) : null;
+  const current = fs.existsSync(cur) ? entry({ adopted: fs.existsSync(cur + '.cwd'), locked: fs.existsSync(cur + '.lock') }, read(cur), cur) : null;
   let archived = [];
   try {
     const re = ARCHIVE_NAME(id);
@@ -205,7 +213,7 @@ function sessionHistory(id) {
       const at = new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +t.slice(0, 2), +t.slice(2, 4), +t.slice(4, 6))).toISOString();
       const f = path.join(SESSIONS, 'archive', x.name);
       if (!fs.existsSync(f + '.summary')) saveSummary(f, read(f));
-      return entry({ name: x.name, at, adopted: fs.existsSync(f + '.cwd'), summary: read(f + '.summary') }, read(f));
+      return entry({ name: x.name, at, adopted: fs.existsSync(f + '.cwd'), locked: fs.existsSync(f + '.lock'), kept: fs.existsSync(f + '.kept'), summary: read(f + '.summary') }, read(f), f);
     }).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.name < b.name ? 1 : -1));
   } catch { /* nothing archived yet */ }
   return { id, current, archived };
@@ -219,8 +227,32 @@ function switchSession(id, name) {
   const dest = path.join(SESSIONS, id);
   fs.renameSync(src, dest);
   if (fs.existsSync(src + '.cwd')) fs.renameSync(src + '.cwd', dest + '.cwd');
+  if (fs.existsSync(src + '.lock')) fs.renameSync(src + '.lock', dest + '.lock');
+  if (fs.existsSync(src + '.title')) fs.renameSync(src + '.title', dest + '.title');
+  try { fs.rmSync(src + '.kept', { force: true }); } catch { /* it is the current session again, not an archived one */ }
   try { fs.rmSync(src + '.summary', { force: true }); } catch { /* a leftover note is harmless */ } // it runs again, so its summary is rewritten when it is archived next
   return { archived, restored: name };
+}
+// Lock and Archive are two independent marks on a session: <file>.lock (cannot be deleted) and <file>.kept (listed in the Archived section).
+// name given: that archived session; no name: the stored (current) one. Returns null when there is no such session.
+function sessionFile(id, name) {
+  if (name === undefined) { const f = path.join(SESSIONS, id); return fs.existsSync(f) ? f : null; }
+  if (typeof name !== 'string' || !ARCHIVE_NAME(id).test(name)) return null;
+  const f = path.join(SESSIONS, 'archive', name);
+  return fs.existsSync(f) ? f : null;
+}
+function setTitle(id, name, title) { // an empty title goes back to the generated one
+  const f = sessionFile(id, name);
+  if (!f) return null;
+  const t = title.replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (t) fs.writeFileSync(f + '.title', t + '\n'); else fs.rmSync(f + '.title', { force: true });
+  return t;
+}
+function setMark(id, name, mark, on) {
+  const f = sessionFile(id, name);
+  if (!f) return null;
+  if (on) fs.writeFileSync(f + '.' + mark, '\n'); else fs.rmSync(f + '.' + mark, { force: true });
+  return true;
 }
 const isTaskId = (s) => /^\d+-\d+$/.test(s);
 const readCounter = (file) => parseInt(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '0', 10) || 0;
@@ -764,7 +796,7 @@ http.createServer((req, res) => {
       });
     });
   }
-  const sr = p.match(/^\/api\/sessions\/(main|\d+)(\/reset|\/history|\/switch|\/delete)?$/);
+  const sr = p.match(/^\/api\/sessions\/(main|\d+)(\/reset|\/history|\/switch|\/delete|\/lock|\/keep|\/rename)?$/);
   if (sr) { // only "main" and the number of an existing card; the id never becomes a path of its own
     const id = sr[1];
     if (id !== 'main' && !findCard(id)) return send(res, 404, 'Not found');
@@ -778,7 +810,37 @@ http.createServer((req, res) => {
       return readJson(req, res, (d) => {
         const r = deleteSession(id, d.name);
         if (!r) return send(res, 404, 'Not found');
+        if (r.locked) return send(res, 423, JSON.stringify({ error: 'This session is locked. Unlock it first.' }), TYPES['.json']);
         send(res, 200, JSON.stringify({ ok: true, id, ...r }), TYPES['.json']);
+      });
+    }
+    if (sr[2] === '/lock') { // {name?, locked: boolean}: a locked session cannot be deleted
+      if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        if (typeof d.locked !== 'boolean') return send(res, 400, JSON.stringify({ error: '"locked" must be true or false' }), TYPES['.json']);
+        if (!setMark(id, d.name, 'lock', d.locked)) return send(res, 404, 'Not found');
+        send(res, 200, JSON.stringify({ ok: true, id, locked: d.locked }), TYPES['.json']);
+      });
+    }
+    if (sr[2] === '/rename') { // {name?, title}: your own name for a session (empty = back to the generated one)
+      if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        if (typeof d.title !== 'string') return send(res, 400, JSON.stringify({ error: '"title" must be text' }), TYPES['.json']);
+        const t = setTitle(id, d.name, d.title);
+        if (t === null) return send(res, 404, 'Not found');
+        send(res, 200, JSON.stringify({ ok: true, id, title: t }), TYPES['.json']);
+      });
+    }
+    if (sr[2] === '/keep') { // {name, kept: boolean} files an earlier session in the Archived section (or takes it out); no name: archive the current one, like New session
+      if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        if (d.name === undefined) { const name = archiveSession(id, true); return name ? send(res, 200, JSON.stringify({ ok: true, id, archived: name, kept: true }), TYPES['.json']) : send(res, 404, 'Not found'); }
+        if (typeof d.kept !== 'boolean') return send(res, 400, JSON.stringify({ error: '"kept" must be true or false' }), TYPES['.json']);
+        if (!setMark(id, d.name, 'kept', d.kept)) return send(res, 404, 'Not found');
+        send(res, 200, JSON.stringify({ ok: true, id, kept: d.kept }), TYPES['.json']);
       });
     }
     if (sr[2] === '/switch') {
