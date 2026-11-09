@@ -56,7 +56,7 @@
     var desc = document.querySelector('p.desc');
     if (desc) {
       var d = document.createElement('textarea');
-      d.maxLength = 4000; d.placeholder = 'Add a description'; d.setAttribute('aria-label', 'Description');
+      d.placeholder = 'Add a description'; d.setAttribute('aria-label', 'Description');
       desc.replaceWith(d); bind('description', d);
     }
     var notesH = Array.prototype.filter.call(document.querySelectorAll('h2'), function (h) { return h.textContent.trim() === 'Notes'; })[0];

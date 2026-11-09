@@ -5,9 +5,10 @@
 # -s is the signal ttyd sends to the session when its browser tab closes. ttyd's default, SIGHUP, did not end Claude Code (27 claude
 # processes piled up for 4 open tabs), so the default here is SIGKILL: closing a tab ends its session; the transcript is saved as it goes,
 # so opening the card again resumes it.
-# Settings (see example.env): TTYD_PORT, TTYD_INTERFACE, TTYD_CLOSE_SIGNAL.
+# Settings (see example.env): TTYD_PORT, TTYD_INTERFACE, TTYD_CLOSE_SIGNAL, TTYD_BACKGROUND.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./load-env.sh   # .env values; real environment variables win
 IFACE="${TTYD_INTERFACE:-$([ "$(uname)" = Darwin ] && echo lo0 || echo lo)}"
-exec ttyd -W -O -a -s "${TTYD_CLOSE_SIGNAL:-SIGKILL}" -i "$IFACE" -p "${TTYD_PORT:-7681}" ./card-terminal.sh
+BG="${TTYD_BACKGROUND:-#000000}"
+exec ttyd -W -O -a -s "${TTYD_CLOSE_SIGNAL:-SIGKILL}" -i "$IFACE" -p "${TTYD_PORT:-7681}" -t "theme={\"background\":\"$BG\"}" ./card-terminal.sh

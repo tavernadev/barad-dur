@@ -511,6 +511,30 @@ test('templates: the default Code review template is seeded once and an edited c
   assert.deepEqual((await broken.call('GET', '/api/templates')).json, []);
 });
 
+test('a card description and a task update have no character limit (a long paste is stored whole)', async () => {
+  const { call } = boot();
+  const long = 'x'.repeat(100000); // well past the old 4000 characters and the old 16 KB request cap
+  let r = await call('POST', '/api/cards', { title: 'Long', description: long });
+  assert.equal(r.status, 201);
+  assert.equal(r.json.description.length, 100000);
+  assert.equal((await call('POST', `/api/cards/${r.json.id}`, { description: long + 'y' })).status, 200, 'editing it keeps working');
+  assert.equal((await call('POST', '/api/cards', { title: 'y'.repeat(201) })).status, 400, 'the title limit stays');
+  const task = (await call('POST', `/api/cards/${r.json.id}/tasks`, { title: 'T' })).json.find((x) => x.title === 'T');
+  r = await call('POST', `/api/cards/${r.json.id}/tasks`, { id: task.id, update: long, by: 'me' });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.find((x) => x.id === task.id).updates[0].text.length, 100000);
+});
+
+test('templates: the "Files changed" tab link (/changes) and a #diff fragment are accepted and stored as the canonical link', async () => {
+  const gh = fakeGh({ 7: PR({ title: 'feat(entry): ABC-123: tab link' }) });
+  const { call } = boot({ env: gh.env });
+  for (const tail of ['/changes', '/changes#diff-9038818a3db9d36051ee2e43b2d8d2d6e3eee03adcde8ae9ebcb2ae0b3cc3ea1', '/files?w=1#diff-abc']) {
+    const r = await call('POST', '/api/cards', REVIEW(LINK + tail));
+    assert.deepEqual([r.status, r.json.pr], [201, LINK], tail);
+  }
+  assert.equal((await call('POST', '/api/cards', REVIEW(LINK + '/changes/extra'))).status, 400, 'other sub-pages are still refused');
+});
+
 test('templates: a card from the Code review template is filled in from the pull request, read-only', async () => {
   const gh = fakeGh({ 7: PR({ title: 'feat(entry): ABC-123: do $(touch pwned) `x` "quoted" thing' }), 8: PR({ title: 'chore: no key here', headRefName: 'feature/xyz-45-more', isDraft: true }), 9: PR({ title: 'fix: merged one', state: 'MERGED', headRefName: 'cleanup' }) });
   const { call, data } = boot({ env: gh.env });

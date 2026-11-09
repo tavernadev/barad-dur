@@ -141,6 +141,11 @@ being asked**, not only to new ones:
 - Test server logic in an isolated harness (no ports, scratch directory), not by starting servers: add or update
   a test in `test/api.test.js` for every API or behavior change and run `npm test` before telling the user it works.
   The harness's `fs.watch` must refuse folders that do not exist, like the real one, so startup-order bugs show up.
+- **After every pull, re-read `CLAUDE.md` in full, in the same turn.** The repo is also edited from another PC, so rules
+  change under you, and a running session keeps the copy it loaded at start. Read it again, then follow the new version, so the
+  user never has to reload the tab or start a new session just to pick up rules. Say what changed in the rules in one or two
+  bullets. Open card sessions are separate processes and keep their old copy until their tab is reloaded; tell the user if a
+  new rule matters to them. Stash and re-apply uncommitted work around the pull, and never `stash drop` without asking.
 - Tell the user what needs a browser refresh or a restart (see "What reloads automatically").
 - **A data layout change is a migration:** add the one-time conversion to `server.js` (locked, idempotent, never
   overwrites), test it on a copy of real data in the scratch folder first, and take a backup before the live server
@@ -209,7 +214,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 ## Configuration and privacy (repo hygiene)
 
 - **Settings are environment variables**, never hardcoded: `APP_NAME`, `HOST`, `PORT`, `TTYD_PORT`,
-  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `GH_BIN`, `CODE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
+  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `TTYD_BACKGROUND`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `GH_BIN`, `CODE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
   and the shell scripts load it through `load-env.sh`; in both, **real environment variables win over `.env`**. The
   browser-safe settings are served at `/api/config`. When you add a setting, add it to `example.env` with a default and
   a comment, and to the README table in the same turn. Edits to `.env` need a server restart (tell the user);
@@ -332,7 +337,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
     must follow them.
     For a pull request link the server reads the title, file count, lines, draft flag and ticket key with `gh pr view` and fills the rest of the
     blanks (`repo`, `number`, `title`, `short_title`, `ticket`, `files`, `added`, `removed`, `draft`, `pr`); the card gets `ticket` and `pr` set.
-  - **Only `https://github.com/<org>/<repo>/pull/<n>` links are accepted** (optionally followed by `/files`, `/commits` or `/checks`). `gh` is called
+  - **Only `https://github.com/<org>/<repo>/pull/<n>` links are accepted** (optionally followed by `/files`, `/changes` (GitHub's "Files changed" tab), `/commits` or `/checks`, and a `?query` or `#fragment` is ignored). `gh` is called
     with fixed arguments (never a shell string), read-only, and **never writes to GitHub**. If `gh` is missing, not signed in or the PR is not found,
     the card is still created with the link, the blanks it could not fill stay visible as `{{name}}`, and the response carries a short `warning`
     (the Inbox dialog shows it). Tell the user when you see a warning.
@@ -371,7 +376,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **Generated (Inbox) cards are editable in the browser:** the title, description and notes are inputs that save
   to `card.json` automatically when you leave the field (Escape reverts, Enter saves the title). `card.json` is
   the source of truth for `title`, `description` and `notes`; the static text inside a generated `index.html`
-  can be stale, so read `card.json`. Limits: `title` required, at most 200 characters; `description` 4000; `notes` 20000.
+  can be stale, so read `card.json`. Limits: `title` required, at most 200 characters; `notes` 20000. The **description and task updates have no character limit** (the user asked for none, for long pastes), so never truncate or reject them for length; only a request-size safety net applies (`MAX_TEXT_BODY` in `server.js`).
 - Report pages may load assets from their own folder via relative paths. Link back with `href="/"` and
   link to other cards with `href="/card/<n>"`; external links open in a new tab automatically.
 

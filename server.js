@@ -147,6 +147,7 @@ function addTab(dir, title) {
 // a card session publishes and attaches it in the same turn, only when the user asks for an artifact. The saved page is untrusted data and is rendered sandboxed.
 const ARTIFACT_URL = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+(?:\?[A-Za-z0-9_=&.-]*)?$/;
 const MAX_ARTIFACT = 6 * 1024 * 1024;
+const MAX_TEXT_BODY = 16 * 1024 * 1024; // request-size safety net for text fields (card description, task updates): there is no character limit on them
 function readArtifact(dir) {
   try {
     const a = JSON.parse(fs.readFileSync(path.join(dir, 'artifact.json'), 'utf8'));
@@ -234,11 +235,11 @@ function listTemplates() {
 }
 const fillBlanks = (text, values) => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(values, k) ? String(values[k]) : m)); // one pass: values are never re-expanded
 
-// Only https://github.com/<org>/<repo>/pull/<number> (optionally followed by /files, /commits or /checks) is accepted.
+// Only https://github.com/<org>/<repo>/pull/<number> (optionally followed by /files, /changes, /commits or /checks; a ?query or #fragment is ignored) is accepted.
 function parsePullLink(v) {
   let u; try { u = new URL(String(v).trim()); } catch { return null; }
   const m = u.protocol === 'https:' && u.hostname === 'github.com' && !u.username && !u.password && !u.port
-    && u.pathname.match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d{1,8})(?:\/(?:files|commits|checks))?\/?$/);
+    && u.pathname.match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d{1,8})(?:\/(?:files|changes|commits|checks))?\/?$/);
   return m ? { org: m[1], repo: m[2], number: Number(m[3]), link: `https://github.com/${m[1]}/${m[2]}/pull/${m[3]}` } : null;
 }
 // Read the pull request's metadata with the GitHub CLI. Resolves { values } or { warning }; it never rejects and never writes to GitHub.
@@ -299,7 +300,7 @@ async function createFromTemplate(d, res) {
     if (extra === null || extra.length > 1500) return send(res, 400, 'Invalid instructions (text, at most 1500 characters)');
     const tail = extra ? `\n\nExtra instructions (follow these as well as the steps above):\n${extra}` : '';
     const title = fillBlanks(tpl.title, values).replace(/\s+/g, ' ').trim().slice(0, 200) || tpl.name;
-    const description = fillBlanks(tpl.description, values).slice(0, 4000 - tail.length) + tail;
+    const description = fillBlanks(tpl.description, values) + tail;
     const card = createCard({ title, description, inbox: tpl.place !== 'Topics' && d.topics !== true, status: tpl.status, ticket, pr, taskProgress: tpl.progress });
     send(res, 201, JSON.stringify(warning ? { ...card, warning } : card), TYPES['.json']);
   } catch (e) { send(res, 500, 'Could not create the card from the template'); }
@@ -540,9 +541,9 @@ http.createServer((req, res) => {
       if (d.template !== undefined) return createFromTemplate(d, res); // { template: "<id>", values: { <blank>: "..." }, instructions?, topics? }
       const title = typeof d.title === 'string' ? d.title.trim() : '';
       const description = typeof d.description === 'string' ? d.description.trim() : '';
-      if (!title || title.length > 200 || description.length > 4000) return send(res, 400, 'Invalid title or description');
+      if (!title || title.length > 200) return send(res, 400, 'Invalid title or description');
       send(res, 201, JSON.stringify(createCard({ title, description, inbox: d.topics !== true })), TYPES['.json']); // topics: true files it in Topics, not the Inbox
-    });
+    }, MAX_TEXT_BODY);
   }
   if (p === '/api/cards') return send(res, 200, JSON.stringify(listCards()), TYPES['.json']);
   if (p === '/api/open-vscode') { // the header's Settings menu: open this project in VS Code. Fixed command and folder, no shell, same write guards as the card API.
@@ -652,7 +653,7 @@ http.createServer((req, res) => {
           if (typeof d.title === 'string' && d.title.trim() && d.title.length <= 300) t.title = d.title.trim();
           if (d.update !== undefined) { // write an update on the task (by: "me" or "claude")
             const text = typeof d.update === 'string' ? d.update.trim() : '';
-            if (!text || text.length > 4000) return bad('Invalid update');
+            if (!text) return bad('Invalid update');
             t.updates.push({ at: new Date().toISOString(), by: TASK_BY.includes(d.by) ? d.by : 'me', text });
           }
           if (d.move === 'up' || d.move === 'down') {
@@ -663,7 +664,7 @@ http.createServer((req, res) => {
       }
       list.forEach((t, k) => { t.order = k + 1; saveTask(card.dir, t); });
       send(res, 200, JSON.stringify(list), TYPES['.json']);
-    });
+    }, MAX_TEXT_BODY);
   }
 
   const st = p.match(/^\/api\/cards\/([^/]+)$/);
@@ -674,7 +675,7 @@ http.createServer((req, res) => {
     return readJson(req, res, (changes) => {
       const fields = Object.keys(changes);
       const ticketOk = (v) => typeof v === 'string' && (v.trim() === '' || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v.trim()));
-      const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : v.length <= (f === 'notes' ? 20000 : 4000));
+      const textOk = (f, v) => typeof v === 'string' && (f === 'title' ? v.trim() !== '' && v.trim().length <= 200 : (f === 'notes' ? v.length <= 20000 : true)); // the description has no length limit
       const valid = (f) => (OPTIONS[f] && OPTIONS[f].includes(changes[f])) || ((f === 'inbox' || f === 'taskProgress') && typeof changes[f] === 'boolean') || (f === 'ticket' && ticketOk(changes[f])) || (LINK_FIELDS[f] && linkOk(f, changes[f]))
         || (['title', 'description', 'notes'].includes(f) && textOk(f, changes[f]))
         || (Object.values(REASON_FIELD).includes(f) && typeof changes[f] === 'string' && changes[f].trim() !== '' && changes[f].trim().length <= 1000);
@@ -706,7 +707,7 @@ http.createServer((req, res) => {
       const dir = cardPath(card.id, inbox, done);
       if (dir !== card.dir) moveSafe(card.dir, dir);
       send(res, 200, JSON.stringify({ ...meta, id: card.id, inbox, done }), TYPES['.json']);
-    });
+    }, MAX_TEXT_BODY);
   }
 
   const sm = p.match(/^\/static\/([^/]+)$/);

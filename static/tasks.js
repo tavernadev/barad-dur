@@ -277,7 +277,7 @@
       '<span class="mv"><button type="button" class="sm" data-mv="up" title="Move up">↑</button><button type="button" class="sm" data-mv="down" title="Move down">↓</button></span>' +
       '</div>' +
       '<h3>Updates</h3><ul class="ups"></ul>' +
-      '<textarea class="upin" maxlength="4000" placeholder="Write an update on this task (Cmd/Ctrl+Enter to post)" aria-label="Write an update"></textarea>' +
+      '<textarea class="upin" placeholder="Write an update on this task (Cmd/Ctrl+Enter to post)" aria-label="Write an update"></textarea>' +
       '<div class="foot"><button type="button" class="sm del">Delete task</button><button type="button" class="sm post">Post update</button></div>';
     ['ct', 'ttl', 'ups', 'upin', 'del', 'post'].forEach(function (k) { ref[k] = card.querySelector('.' + k); });
     ref.status = card.querySelector('[data-k=status]');
