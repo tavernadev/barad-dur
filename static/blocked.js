@@ -67,7 +67,7 @@
       sel.disabled = true;
       return fetch('/api/cards/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ status: status }, (function () { var b = {}; b[R.field] = reason; return b; })())) })
         .then(function (r) { if (!r.ok) throw new Error(r.status); sel.dataset.value = status; })
-        .catch(function () { alert('Could not save'); sel.value = before; })
+        .catch(function () { if (window.baradDialog) window.baradDialog.notice({ title: 'Could not save', items: ['The status was not changed. Try again.'] }); sel.value = before; })
         .then(function () { sel.disabled = false; });
     });
   }, true);

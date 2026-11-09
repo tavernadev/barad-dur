@@ -336,6 +336,20 @@ test('home.html: only a real change reloads the page (a read-triggered fs.watch 
   assert.equal(got.filter((c) => c.startsWith('event: reload')).length, 1, 'and not again');
 });
 
+test('terminal.sh: no "Leave site?" popup unless asked, and the theme and close signal stay', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-ttyd-'));
+  const bin = path.join(tmp, 'bin'); fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'ttyd'), '#!/bin/sh\nfor a in "$@"; do echo "ARG=$a"; done\n', { mode: 0o755 }); // a stand-in: the real ttyd is never started
+  const run = (extra) => spawnSync('bash', [path.join(REPO, 'terminal.sh')], { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, TTYD_LEAVE_ALERT: '', ...extra }, encoding: 'utf8' }).stdout.split('\n').filter((l) => l.startsWith('ARG=')).map((l) => l.slice(4));
+  let args = run({});
+  assert.ok(args.includes('disableLeaveAlert=true'), 'off by default');
+  assert.equal(args.indexOf('-t') > -1 && args.filter((a) => a === '-t').length, 2, 'next to the theme option, not instead of it');
+  assert.ok(args.some((a) => a.startsWith('theme=')) && args.includes('-s') && args.includes('./card-terminal.sh'));
+  args = run({ TTYD_LEAVE_ALERT: '1' });
+  assert.equal(args.includes('disableLeaveAlert=true'), false, 'TTYD_LEAVE_ALERT=1 brings the popup back');
+  assert.ok(args.some((a) => a.startsWith('theme=')) && args.includes('./card-terminal.sh'));
+});
+
 test('card-terminal.sh: starts a card session, resumes it, and resumes an adopted session from its own directory', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-term-'));
   const data = path.join(tmp, 'data'), elsewhere = path.join(tmp, 'other-project');
@@ -541,6 +555,266 @@ test('templates: the default Code review template is seeded once and an edited c
   // broken templates are skipped, not fatal
   const broken = boot({ prepare: (root) => { fs.mkdirSync(path.join(root, 'data', 'templates', 'bad'), { recursive: true }); fs.writeFileSync(path.join(root, 'data', 'templates', 'bad', 'template.json'), '{not json'); } });
   assert.deepEqual((await broken.call('GET', '/api/templates')).json, []);
+});
+
+test('new session: archives only that tab\'s session, keeps the id, and refuses anything else', async () => {
+  const { call, data } = boot();
+  const S = path.join(data, '.sessions');
+  fs.mkdirSync(S, { recursive: true });
+  fs.writeFileSync(path.join(S, 'main'), 'aaaaaaaa-0000-4000-8000-000000000001\n');
+  fs.writeFileSync(path.join(S, '1'), 'bbbbbbbb-0000-4000-8000-000000000002\n');
+  fs.writeFileSync(path.join(S, '1.cwd'), '/some/other/dir\n'); // card 1 adopted a session started elsewhere
+  assert.deepEqual((await call('GET', '/api/sessions/main')).json, { id: 'main', exists: true, adopted: false });
+  assert.deepEqual((await call('GET', '/api/sessions/1')).json, { id: '1', exists: true, adopted: true });
+  // main: archived under .sessions/archive/, the card sessions are untouched
+  let r = await call('POST', '/api/sessions/main/reset', {});
+  assert.equal(r.status, 200);
+  assert.match(r.json.archived, /^main-\d{8}T\d{6}Z$/);
+  assert.equal(fs.existsSync(path.join(S, 'main')), false);
+  assert.equal(fs.readFileSync(path.join(S, 'archive', r.json.archived), 'utf8').trim(), 'aaaaaaaa-0000-4000-8000-000000000001', 'the old id is kept');
+  assert.equal(fs.readFileSync(path.join(S, '1'), 'utf8').trim(), 'bbbbbbbb-0000-4000-8000-000000000002', 'another tab\'s session is not touched');
+  // a card: its adopted directory moves with it, and the reply says so
+  r = await call('POST', '/api/sessions/1/reset', {});
+  assert.deepEqual([r.status, r.json.adopted], [200, true]);
+  assert.equal(fs.existsSync(path.join(S, '1')) || fs.existsSync(path.join(S, '1.cwd')), false);
+  assert.equal(fs.readFileSync(path.join(S, 'archive', r.json.archived + '.cwd'), 'utf8').trim(), '/some/other/dir');
+  // nothing stored yet: fine, nothing archived. Twice in the same second never overwrites an archive.
+  assert.deepEqual([(await call('POST', '/api/sessions/main/reset', {})).json.archived], [null]);
+  const seen = new Set();
+  for (let i = 0; i < 3; i++) { fs.writeFileSync(path.join(S, 'main'), `cccccccc-0000-4000-8000-00000000000${i}\n`); seen.add((await call('POST', '/api/sessions/main/reset', {})).json.archived); }
+  assert.equal(seen.size, 3);
+  assert.equal(fs.readdirSync(path.join(S, 'archive')).filter((f) => f.startsWith('main-')).length, 4, 'every archive is kept');
+  // only main and a card that exists; GET and POST guards like the other write routes
+  for (const bad of ['999', 'abc', '..%2Fmain', 'main.old', 'archive']) assert.equal((await call('POST', `/api/sessions/${bad}/reset`, {})).status, 404, bad);
+  assert.equal((await call('GET', '/api/sessions/main/reset')).status, 405);
+  assert.equal((await call('POST', '/api/sessions/main', {})).status, 405);
+  assert.equal((await call('POST', '/api/sessions/main/reset', {}, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await call('POST', '/api/sessions/main/reset', {}, { 'content-type': 'text/plain' })).status, 403);
+});
+
+test('the app has its own dialogs: no browser popups, and the dialog confirms, cancels, prompts and stays single', async () => {
+  // no native alert / confirm / prompt anywhere in the pages and shared scripts
+  const files = ['shell.html', 'home.html', ...fs.readdirSync(path.join(REPO, 'static')).filter((f) => f.endsWith('.js')).map((f) => 'static/' + f)];
+  for (const f of files) assert.doesNotMatch(fs.readFileSync(path.join(REPO, f), 'utf8').replace(/\/\/.*$/gm, ''), /(^|[^.\w])(alert|confirm|prompt)\(/m, `${f} must use baradDialog, not a browser popup`);
+  // every page that can show one loads it: the shell, the main page, and card reports (before blocked.js, which uses it)
+  const { call } = boot();
+  assert.match(fs.readFileSync(path.join(REPO, 'shell.html'), 'utf8'), /<script src="\/static\/dialog\.js"><\/script>/);
+  const home = (await call('GET', '/content/home')).body, report = (await call('GET', '/content/1/')).body;
+  assert.match(home, /\/static\/dialog\.js/);
+  assert.ok(report.indexOf('/static/dialog.js') > -1 && report.indexOf('/static/dialog.js') < report.indexOf('/static/blocked.js'));
+
+  // run the dialog against a tiny fake DOM
+  class El {
+    constructor(tag) { this.tag = tag; this.children = []; this.l = {}; this.className = ''; this.style = {}; this.attrs = {}; this.value = ''; this.text = ''; }
+    set textContent(v) { this.text = v; } get textContent() { return this.text; }
+    appendChild(c) { this.children.push(c); c.parent = this; return c; }
+    setAttribute(k, v) { this.attrs[k] = v; }
+    addEventListener(t, f) { (this.l[t] = this.l[t] || []).push(f); }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((x) => x !== this); }
+    focus() { doc.activeElement = this; } select() {}
+    all(p, out = []) { for (const c of this.children) { if (p(c)) out.push(c); c.all(p, out); } return out; }
+    querySelectorAll() { return this.all((c) => c.tag === 'input' || c.tag === 'button'); }
+    fire(t, e = {}) { (this.l[t] || []).forEach((f) => f({ target: this, ...e })); }
+  }
+  const body = new El('body'), keys = [];
+  const doc = { activeElement: null, head: new El('head'), body, createElement: (t) => new El(t), contains: () => true,
+    addEventListener: (t, f) => { if (t === 'keydown') keys.push(f); }, removeEventListener: (t, f) => { const i = keys.indexOf(f); if (i > -1) keys.splice(i, 1); } };
+  const win = {}; new Function('window', 'document', fs.readFileSync(path.join(REPO, 'static', 'dialog.js'), 'utf8'))(win, doc);
+  const D = win.baradDialog;
+  const find = (cls) => body.all((c) => c.className.split(' ').includes(cls))[0];
+  const press = (key) => keys.slice().forEach((f) => f({ key, preventDefault() {}, stopPropagation() {}, target: doc.activeElement }));
+  const open = () => body.children.length;
+
+  let p = D.confirm({ title: '<b>Start?</b>', who: 'Main session', items: ['one', 'two'], confirmText: 'Go' });
+  assert.equal(open(), 1);
+  assert.equal(find('bd-ok').text, 'Go'); assert.equal(doc.activeElement, find('bd-ok'), 'focus starts on the confirm button');
+  assert.equal(body.all((c) => c.tag === 'h3')[0].text, '<b>Start?</b>', 'text is set as text, never as markup');
+  assert.equal(body.all((c) => c.tag === 'li').length, 2);
+  assert.equal(await D.confirm({ title: 'second' }), false, 'a second dialog while one is open is refused');
+  find('bd-ok').fire('click'); assert.equal(await p, true); assert.equal(open(), 0, 'the dialog is removed when closed');
+  p = D.confirm({ title: 'x' }); press('Escape'); assert.equal(await p, false);
+  p = D.confirm({ title: 'x' }); body.all((c) => c.tag === 'button' && c.text === 'Cancel')[0].fire('click'); assert.equal(await p, false);
+  p = D.confirm({ title: 'x' }); const overlay = find('bd-overlay');
+  overlay.fire('mousedown', { target: find('bd-dlg') }); assert.equal(open(), 1, 'a click inside the dialog keeps it open');
+  overlay.fire('mousedown', { target: overlay }); assert.equal(await p, false, 'a click outside cancels');
+  p = D.notice({ title: 'Oops', items: ['Try again.'] }); assert.equal(body.all((c) => c.tag === 'button').length, 1, 'a notice has only OK');
+  find('bd-ok').fire('click'); assert.equal(await p, undefined);
+  p = D.prompt({ title: 'Ticket', value: ' abc ' }); const input = body.all((c) => c.tag === 'input')[0];
+  assert.equal(doc.activeElement, input, 'a prompt starts in its field'); input.value = '  https://x.example/1  ';
+  press('Enter'); assert.equal(await p, 'https://x.example/1', 'Enter accepts, and the text is trimmed');
+  p = D.prompt({ title: 'Ticket' }); press('Escape'); assert.equal(await p, null);
+  p = D.prompt({ title: 'Ticket', value: 'old' }); body.all((c) => c.tag === 'input')[0].value = ''; find('bd-ok').fire('click'); assert.equal(await p, '', 'an empty answer is allowed (it removes a ticket)');
+  assert.equal(keys.length, 0, 'no key handler is left behind');
+});
+
+test('/api/version: the shell can tell when the server restarted or shell.html changed', async () => {
+  const a = boot(), b = boot();
+  const v1 = (await a.call('GET', '/api/version')).json;
+  assert.ok(v1.server && Number.isFinite(v1.shell) && v1.shell > 0);
+  assert.deepEqual((await a.call('GET', '/api/version')).json, v1, 'stable while nothing changes');
+  assert.notEqual((await b.call('GET', '/api/version')).json.server, v1.server, 'a new server process has a new id');
+  const later = new Date(Date.now() + 60000); fs.utimesSync(path.join(a.root, 'shell.html'), later, later);
+  const v2 = (await a.call('GET', '/api/version')).json;
+  assert.deepEqual([v2.server === v1.server, v2.shell !== v1.shell], [true, true], 'touching shell.html changes only its value');
+});
+
+test('session history and switch: labels from the transcripts, newest first, and a swap that archives the current one', async () => {
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-claude-'));
+  const proj = path.join(cfg, 'projects', '-some-project'); fs.mkdirSync(proj, { recursive: true });
+  const A = 'aaaaaaaa-0000-4000-8000-00000000000a', B = 'bbbbbbbb-0000-4000-8000-00000000000b', C = 'cccccccc-0000-4000-8000-00000000000c';
+  const line = (o) => JSON.stringify(o) + '\n';
+  // A: no title, so its first real message is the label (the launcher prompt, a system note and a command are skipped)
+  fs.writeFileSync(path.join(proj, A + '.jsonl'), line({ type: 'user', message: { content: 'This is the main workspace session for this command center. Read CLAUDE.md first.' } })
+    + line({ type: 'user', message: { content: [{ type: 'text', text: '<system-reminder>ignore</system-reminder>' }] } }) + line({ type: 'user', message: { content: [{ type: 'text', text: 'fix the   terminal\ncolors' }] } }));
+  // B: a long session whose generated title is near the end, beyond the part read from the start
+  fs.writeFileSync(path.join(proj, B + '.jsonl'), line({ type: 'user', message: { content: 'first words' } }) + line({ type: 'junk', pad: 'x'.repeat(300000) }) + line({ type: 'ai-title', aiTitle: 'Ticket links for every tracker' }));
+  fs.writeFileSync(path.join(proj, C + '.jsonl'), line({ type: 'ai-title', aiTitle: 'Current work' }));
+  const { call, data } = boot({ env: { CLAUDE_CONFIG_DIR: cfg } });
+  const S = path.join(data, '.sessions'); fs.mkdirSync(S, { recursive: true });
+  const first = async (id) => { fs.writeFileSync(path.join(S, 'main'), id + '\n'); return (await call('POST', '/api/sessions/main/reset', {})).json.archived; };
+  const nameA = await first(A), nameB = await first(B); // B is archived after A, in the same second or later
+  fs.writeFileSync(path.join(S, 'main'), C + '\n');
+  let h = (await call('GET', '/api/sessions/main/history')).json;
+  assert.deepEqual([h.current.resumeId, h.current.label], [C, 'Current work']);
+  assert.deepEqual(h.archived.map((x) => x.name), [nameB, nameA], 'newest first');
+  assert.deepEqual(h.archived.map((x) => x.label), ['Ticket links for every tracker', 'fix the terminal colors']);
+  assert.ok(h.archived.every((x) => /^\d{4}-\d\d-\d\dT/.test(x.at) && x.updated), 'each has an archive time and a last-activity time');
+  assert.deepEqual((await call('GET', '/api/sessions/1/history')).json.archived, [], 'another tab has its own history');
+  // switch to A: the current session (C) is archived, A is the stored session again
+  const r = await call('POST', '/api/sessions/main/switch', { name: nameA });
+  assert.deepEqual([r.status, r.json.restored], [200, nameA]);
+  assert.equal(fs.readFileSync(path.join(S, 'main'), 'utf8').trim(), A);
+  assert.equal(fs.readFileSync(path.join(S, 'archive', r.json.archived), 'utf8').trim(), C, 'the session we left is kept');
+  assert.equal(fs.existsSync(path.join(S, 'archive', nameA)), false, 'a restored one leaves the archive');
+  h = (await call('GET', '/api/sessions/main/history')).json;
+  assert.deepEqual([h.current.resumeId, h.archived.length], [A, 2]);
+  // with nothing stored, a switch just restores
+  fs.rmSync(path.join(S, 'main'));
+  assert.equal((await call('POST', '/api/sessions/main/switch', { name: nameB })).json.archived, null);
+  assert.equal(fs.readFileSync(path.join(S, 'main'), 'utf8').trim(), B);
+  // only a name from this id's own archive, never a path; same guards as the other writes
+  for (const bad of [undefined, 5, '../main', 'main', 'archive/' + nameA, nameA.replace('main', '1'), 'main-20000101T000000Z', nameA + '/../x']) {
+    assert.equal((await call('POST', '/api/sessions/main/switch', { name: bad })).status, 404, String(bad));
+  }
+  assert.equal((await call('POST', '/api/sessions/1/switch', { name: nameA })).status, 404, "another id cannot take main's archive");
+  assert.equal((await call('POST', '/api/sessions/main/switch', { name: nameA }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await call('GET', '/api/sessions/main/switch')).status, 405);
+  assert.equal((await call('POST', '/api/sessions/main/history', {})).status, 405);
+});
+
+test('session summary: one line about the last reply, written when a session is archived, cached, and dropped when it runs again', async () => {
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-claude-'));
+  const proj = path.join(cfg, 'projects', '-some-project'); fs.mkdirSync(proj, { recursive: true });
+  const U1 = 'aaaaaaaa-0000-4000-8000-0000000000a1', U2 = 'bbbbbbbb-0000-4000-8000-0000000000b2', U3 = 'cccccccc-0000-4000-8000-0000000000c3';
+  const line = (o) => JSON.stringify(o) + '\n', say = (type, text, extra) => line({ type, message: { content: [{ type: 'text', text }] }, ...extra });
+  // U1: a reply, then work that has no reply text, a sub-agent note, and megabytes of request blobs at the very end (the scan reads backward past them)
+  fs.writeFileSync(path.join(proj, U1 + '.jsonl'), say('user', 'build the bar') + say('assistant', '**Done.** The terminal bar is built and tested, but it is not committed yet.\n\n- more detail\n- and more')
+    + line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] } }) + line({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } })
+    + say('assistant', 'sub-agent noise that is not the session', { isSidechain: true }) + ('{"type":"api-request-blob","blob":"' + 'x'.repeat(700000) + '"}\n').repeat(3));
+  // U2: never answered: the launcher prompt is skipped and the last real question is used
+  fs.writeFileSync(path.join(proj, U2 + '.jsonl'), say('user', 'This is the main workspace session for this command center. Read CLAUDE.md first.') + say('user', 'please fix the failing test in the billing module'));
+  const { call, data } = boot({ env: { CLAUDE_CONFIG_DIR: cfg } });
+  const S = path.join(data, '.sessions'); fs.mkdirSync(S, { recursive: true });
+  const archive = async (uuid) => { fs.writeFileSync(path.join(S, 'main'), uuid + '\n'); return (await call('POST', '/api/sessions/main/reset', {})).json.archived; };
+  const sidecar = (name) => path.join(S, 'archive', name + '.summary');
+  // archiving writes the summary next to the stored id
+  const n1 = await archive(U1);
+  assert.equal(fs.readFileSync(sidecar(n1), 'utf8').trim(), 'Done. The terminal bar is built and tested, but it is not committed yet.');
+  const n2 = await archive(U2);
+  assert.equal(fs.readFileSync(sidecar(n2), 'utf8').trim(), 'You asked: please fix the failing test in the billing module');
+  const n3 = await archive(U3); // no transcript on disk: nothing is written, nothing breaks
+  assert.equal(fs.existsSync(sidecar(n3)), false);
+  fs.writeFileSync(path.join(S, 'main'), U1 + '\n');
+  let h = (await call('GET', '/api/sessions/main/history')).json;
+  assert.deepEqual(h.archived.map((x) => x.summary).sort(), ['', 'Done. The terminal bar is built and tested, but it is not committed yet.', 'You asked: please fix the failing test in the billing module'].sort());
+  assert.equal(h.current.summary, undefined, 'the session that is running has no stored summary');
+  // an older archive without a note gets one the first time the list is opened, and keeps it
+  const old = 'main-20200101T000000Z'; fs.writeFileSync(path.join(S, 'archive', old), U2 + '\n');
+  h = (await call('GET', '/api/sessions/main/history')).json;
+  assert.equal(h.archived.find((x) => x.name === old).summary, 'You asked: please fix the failing test in the billing module');
+  assert.equal(fs.existsSync(sidecar(old)), true);
+  // switching back to an archived session removes its note (it runs again, so it is rewritten when it is archived next); the one left gets its own
+  fs.rmSync(path.join(S, 'main'));
+  assert.equal((await call('POST', '/api/sessions/main/switch', { name: n1 })).status, 200);
+  assert.equal(fs.existsSync(sidecar(n1)), false);
+  const left = (await call('POST', '/api/sessions/main/reset', {})).json.archived;
+  assert.equal(fs.readFileSync(sidecar(left), 'utf8').trim(), 'Done. The terminal bar is built and tested, but it is not committed yet.');
+  // the note is a sidecar: it never shows up as a session of its own
+  assert.ok((await call('GET', '/api/sessions/main/history')).json.archived.every((x) => !x.name.endsWith('.summary') && !x.name.endsWith('.cwd')));
+});
+
+test('delete for good: erases one session everywhere Claude keeps it, and nothing else', async () => {
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-claude-')); // always a scratch config folder: this test must never touch the real ~/.claude
+  const U1 = 'aaaaaaaa-0000-4000-8000-0000000000a1', U2 = 'bbbbbbbb-0000-4000-8000-0000000000b2', U3 = 'cccccccc-0000-4000-8000-0000000000c3';
+  const put = (rel, text = 'x') => { const f = path.join(cfg, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); return f; };
+  const mine = (u) => [`projects/-p1/${u}.jsonl`, `projects/-p1/${u}/subagents/a.jsonl`, `file-history/${u}/snap`, `session-env/${u}/env`, `debug/${u}.txt`, `todos/${u}-agent-${u}.json`];
+  for (const u of [U1, U2, U3]) mine(u).forEach((r) => put(r));
+  const index = put('projects/-p1/sessions-index.json', JSON.stringify({ version: 1, entries: [{ sessionId: U1, firstPrompt: 'one' }, { sessionId: U2, firstPrompt: 'two' }], originalPath: '/p1' }, null, 2) + '\n');
+  fs.chmodSync(index, 0o600);
+  const hist = (extra) => [JSON.stringify({ display: 'a prompt', sessionId: U1 }), JSON.stringify({ display: 'other', sessionId: U2 }), '{"broken', JSON.stringify({ display: 'third', sessionId: U3 })].join('\n') + '\n';
+  const history = put('history.jsonl', hist());
+  const registry = put('sessions/4242.json', JSON.stringify({ pid: 4242, sessionId: U1 })); // the running-process registry is not ours to touch
+  const keep = put('keepme', 'untouched');
+  const { call, data } = boot({ env: { CLAUDE_CONFIG_DIR: cfg } });
+  const S = path.join(data, '.sessions'), A = path.join(S, 'archive'); fs.mkdirSync(A, { recursive: true });
+  const n1 = 'main-20260101T000000Z', n2 = 'main-20260102T000000Z';
+  fs.writeFileSync(path.join(A, n1), U1 + '\n'); fs.writeFileSync(path.join(A, n1 + '.cwd'), '/elsewhere\n'); fs.writeFileSync(path.join(A, n1 + '.summary'), 'old note\n');
+  fs.writeFileSync(path.join(A, n2), U2 + '\n'); fs.writeFileSync(path.join(S, 'main'), U3 + '\n');
+  const exists = (rel) => fs.existsSync(path.join(cfg, rel));
+  // an archived session: our files and all of Claude's files for that id go; the other sessions stay
+  let r = await call('POST', '/api/sessions/main/delete', { name: n1 });
+  assert.deepEqual([r.status, r.json.current, r.json.adopted], [200, false, true]);
+  assert.ok(r.json.erased >= 6);
+  for (const rel of mine(U1)) assert.equal(exists(rel), false, rel);
+  assert.deepEqual([n1, n1 + '.cwd', n1 + '.summary'].map((f) => fs.existsSync(path.join(A, f))), [false, false, false]);
+  for (const u of [U2, U3]) for (const rel of mine(u)) assert.equal(exists(rel), true, 'another session is untouched: ' + rel);
+  assert.deepEqual(JSON.parse(fs.readFileSync(index, 'utf8')).entries.map((e) => e.sessionId), [U2], 'only its entry leaves the project index');
+  assert.equal(fs.statSync(index).mode & 0o777, 0o600, 'and the index keeps its permissions');
+  assert.equal(fs.readFileSync(history, 'utf8'), hist().split('\n').filter((l) => !l.includes('"a prompt"')).join('\n'), 'only its prompts leave the history; every other line is byte for byte');
+  assert.equal(fs.existsSync(registry) && fs.existsSync(keep), true);
+  assert.deepEqual((await call('GET', '/api/sessions/main/history')).json.archived.map((x) => x.name), [n2], 'it no longer shows in the list');
+  // the current session: its stored id goes too, and a late write from a process that was still closing is swept shortly after
+  r = await call('POST', '/api/sessions/main/delete', {});
+  assert.deepEqual([r.status, r.json.current], [200, true]);
+  assert.equal(fs.existsSync(path.join(S, 'main')), false);
+  for (const rel of mine(U3)) assert.equal(exists(rel), false, rel);
+  put(`projects/-p1/${U3}.jsonl`, 'late write');
+  await new Promise((resolve) => setTimeout(resolve, 3200));
+  assert.equal(exists(`projects/-p1/${U3}.jsonl`), false, 'the second sweep removes it');
+  assert.equal((await call('GET', '/api/sessions/main/history')).json.current, null);
+  // nothing to delete, names that are not this id's archive, and an id that is not a real session id: 404 or nothing outside our files
+  for (const bad of [{}, { name: '../main' }, { name: n1 }, { name: 'main' }, { name: 5 }, { name: 'main-20260102T000000Z/../x' }]) assert.equal((await call('POST', '/api/sessions/main/delete', bad)).status, 404, JSON.stringify(bad));
+  assert.equal((await call('POST', '/api/sessions/1/delete', { name: n2 })).status, 404, "another id cannot delete main's archive");
+  fs.writeFileSync(path.join(A, 'main-20260103T000000Z'), '../../keepme\n');
+  r = await call('POST', '/api/sessions/main/delete', { name: 'main-20260103T000000Z' });
+  assert.deepEqual([r.status, r.json.erased, fs.existsSync(keep)], [200, 0, true], 'a stored value that is not a session id erases nothing of Claude\'s');
+  assert.equal((await call('POST', '/api/sessions/main/delete', {}, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await call('POST', '/api/sessions/main/delete', {}, { 'content-type': 'text/plain' })).status, 403);
+  assert.equal((await call('GET', '/api/sessions/main/delete')).status, 405);
+  assert.equal(fs.existsSync(path.join(A, n2)), true, 'the other archived session survived all of that');
+});
+
+test('new session end to end: after a reset the launcher starts a fresh session, keeps the old id, and leaves other tabs alone', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'barad-newsess-'));
+  const data = path.join(tmp, 'data');
+  fs.mkdirSync(path.join(data, 'topics', '7'), { recursive: true });
+  fs.writeFileSync(path.join(data, 'topics', '7', 'card.json'), '{}');
+  const fake = path.join(tmp, 'fake-claude'); // the real claude is never run
+  fs.writeFileSync(fake, '#!/bin/sh\necho "ARGS=$*"\n', { mode: 0o755 });
+  const run = (id) => spawnSync('bash', [path.join(REPO, 'card-terminal.sh'), id], { env: { ...process.env, DATA_DIR: data, CLAUDE_BIN: fake, PORT: '8080' }, encoding: 'utf8' }).stdout;
+  const stored = (id) => fs.readFileSync(path.join(data, '.sessions', id), 'utf8').trim();
+  const { call } = boot({ dataDir: data });
+  assert.match(run('main'), /--session-id [0-9a-f-]{36} This is the main workspace session/);
+  const first = stored('main');
+  assert.match(run('main'), new RegExp(`--resume ${first}`), 'before the reset the same session is resumed');
+  run('7'); const card = stored('7');
+  assert.equal((await call('POST', '/api/sessions/main/reset', {})).status, 200);
+  const out = run('main');
+  assert.match(out, /--session-id [0-9a-f-]{36} This is the main workspace session/, 'after the reset a new session starts');
+  assert.doesNotMatch(out, /--resume/);
+  assert.notEqual(stored('main'), first);
+  assert.ok(fs.readdirSync(path.join(data, '.sessions', 'archive')).some((f) => fs.readFileSync(path.join(data, '.sessions', 'archive', f), 'utf8').trim() === first), 'the old id is kept');
+  assert.match(run('7'), new RegExp(`--resume ${card}`), "the card's session was not touched");
 });
 
 test('live reload waits while the user has unsaved typed text, then reloads', () => {

@@ -123,7 +123,7 @@ Whenever you change how a card looks or what a card has (the generated page temp
 files or folders a card should have), **apply it to all existing cards that are not Done or Cancelled, in the same turn, without
 being asked**, not only to new ones:
 
-- **Shared code** (`static/card.js`, `card.css`, `tasks.js`, `blocked.js`, `ticket.js`) already reaches every card on refresh. Check that old
+- **Shared code** (`static/card.js`, `card.css`, `tasks.js`, `blocked.js`, `ticket.js`, `dialog.js`) already reaches every card on refresh. Check that old
   cards still render with it.
 - **Per-card data or markup** (for example `tabs.json` and its tab files, the generated `index.html`) must be added to existing
   cards through the API where one exists (for example `POST /api/cards/<n>/tabs`), otherwise by a careful one-time script over
@@ -146,6 +146,12 @@ being asked**, not only to new ones:
   user never has to reload the tab or start a new session just to pick up rules. Say what changed in the rules in one or two
   bullets. Open card sessions are separate processes and keep their old copy until their tab is reloaded; tell the user if a
   new rule matters to them. Stash and re-apply uncommitted work around the pull, and never `stash drop` without asking.
+- **No browser popups.** The app never uses `alert`, `confirm` or `prompt` (a test fails if one appears in a page or a shared script). Use the
+  app's own dialogs from `static/dialog.js`: `baradDialog.confirm({title, who, quote, items, confirmText, tone})` (resolves true or false),
+  `baradDialog.notice({title, items})` (an OK box) and `baradDialog.prompt({title, message, value, confirmText})` (resolves the text, or null). They
+  are asynchronous, so code that ran after a blocking popup must now run in `.then()`. Text is set as text, never as markup, so a label that came from
+  elsewhere is safe to show. `shell.html` and `home.html` load the script with a tag; the server injects it into card reports before `blocked.js`. A new
+  page that needs a dialog must load it the same way.
 - Tell the user what needs a browser refresh or a restart (see "What reloads automatically").
 - **A data layout change is a migration:** add the one-time conversion to `server.js` (locked, idempotent, never
   overwrites), test it on a copy of real data in the scratch folder first, and take a backup before the live server
@@ -175,6 +181,7 @@ the repo, relative to the repo folder, or a full path like `/home/you/...` or `~
     tasks/.counter            last task number handed out for this card (never reused)
   .sessions/<n>               Claude session id of card n (one session per card); .sessions/main for the main session
   .sessions/<n>.cwd           optional: the directory an adopted session must be resumed from (see "Claude sessions")
+  .sessions/archive/          sessions retired with the "New session" button: <id>-<UTC time> (and .cwd, and .summary), kept so `claude --resume <id>` still works
   .counter                    last card number handed out (never reused)
 ```
 
@@ -194,7 +201,7 @@ Repo files:
 server.js            dependency-free Node server (routes, SSE live updates, card and task APIs, migration)
 shell.html           split view: terminal iframe | content iframe, URL drives the content pane
 home.html            Topics grid and Inbox column at / (shown next to the main terminal)
-static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected), blocked.js (Blocked popup and banner), ticket.js (ticket label and link from a tracker link, injected),
+static/              shared assets: card.css/card.js (generated pages), tasks.js (TODO column, injected), blocked.js (Blocked popup and banner), ticket.js (ticket label and link from a tracker link, injected), dialog.js (the app's own dialogs, shared),
                      live.js + live-worker.js (one shared live-update connection), favicon.png (tab icon,
                      256x256, the "Molten golden all-seeing eye" cropped tight) and barad-dur.png (the
                      official project image, 512x512, the README logo); both are the user's own generated art
@@ -214,7 +221,7 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 ## Configuration and privacy (repo hygiene)
 
 - **Settings are environment variables**, never hardcoded: `APP_NAME`, `HOST`, `PORT`, `TTYD_PORT`,
-  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `TTYD_BACKGROUND`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `GH_BIN`, `CODE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
+  `TTYD_INTERFACE`, `TTYD_CLOSE_SIGNAL`, `TTYD_BACKGROUND`, `TTYD_LEAVE_ALERT`, `DATA_DIR`, `LINEAR_BASE_URL`, `CLAUDE_BIN`, `GH_BIN`, `CODE_BIN`, `OPEN_BROWSER`. The server loads `.env` at start
   and the shell scripts load it through `load-env.sh`; in both, **real environment variables win over `.env`**. The
   browser-safe settings are served at `/api/config`. When you add a setting, add it to `example.env` with a default and
   a comment, and to the README table in the same turn. Edits to `.env` need a server restart (tell the user);
@@ -253,7 +260,8 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - **WSL/Ubuntu:** if the terminal pane shows a `login:` prompt, the `ttyd` apt package's system service is holding
   port 7681; the user fixes it with `sudo systemctl disable --now ttyd`. Don't change the launchers for it.
 - Never reload or restructure `shell.html` casually: it hosts the terminal iframe, and reloading it restarts
-  the terminal's `claude --resume` process. It is intentionally served without the live-reload snippet.
+  the terminal's `claude --resume` process. It is intentionally served without the live-reload snippet. The only deliberate restart of
+  the terminal is the "New session" button (see "Claude sessions").
 
 ## What reloads automatically
 
@@ -274,6 +282,11 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
 - `server.js`: `node --watch` restarts the server on its own. Open pages must be refreshed afterward, which
   also restarts the terminal, so batch `server.js` edits and tell the user.
 - `shell.html`: needs a manual browser refresh (restarts the terminal). Warn the user before editing it.
+- **"Update available" pill.** The shell is never reloaded on its own, so it polls `GET /api/version` (`{server: <boot id>, shell: <shell.html mtime>}`)
+  every 5 seconds and when the tab becomes visible, and compares with the first answer it got after loading. When `shell.html` changed or the server
+  restarted, a small amber **Update available** pill with a **Refresh** button appears in the bar above the terminal (its tooltip says what changed and
+  that refreshing restarts the terminal while the session is kept). The user refreshes when Claude is idle; nothing refreshes by itself. Still tell the
+  user in your reply when you changed `shell.html` or `server.js`.
 
 ## Claude sessions: one main, one per card
 
@@ -302,6 +315,10 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   `--add-dir <data>` if the data folder is not inside it). The session's directory is in its transcript
   (`~/.claude/projects/<dir>/<id>.jsonl`, field `cwd`). An adopted session keeps its own instructions: it does not get
   the card prompt, and the card is a bookmark with tasks and notes next to it. Never let two terminals drive one session.
+- **No "Leave site?" popup.** Closing or refreshing a tab never shows the browser's "Changes you made may not be saved" box: it came from ttyd's own page, and
+  `terminal.sh` turns it off (`-t disableLeaveAlert=true`) unless `TTYD_LEAVE_ALERT=1`. The user wants to decide without being asked. An "only when Claude
+  is busy" version is not possible to do reliably (the terminal is a separate origin and Claude exposes no busy state; transcript timestamps lag during
+  long replies), so do not add a guess. The change applies when ttyd is restarted.
 - **Closing a browser tab ends its Claude process.** ttyd sends `TTYD_CLOSE_SIGNAL` (default `SIGKILL`) when the tab's connection
   closes; the transcript is saved as it goes, so opening the card again starts `claude --resume` and restores the session. ttyd's own
   default, `SIGHUP`, did not end Claude Code: 27 processes piled up for 4 open tabs, so keep `SIGKILL`. Leftovers from before this
@@ -309,6 +326,40 @@ URLs: `/` the main page, `/card/<n>` a card's report with its own terminal. Cont
   can be killed by the user. Never kill a `claude` process whose tab might be open.
 - Reloading a tab restarts only that tab's `claude --resume` process; the session history is kept.
   Two tabs must not drive the same session at once.
+- **Session bar (slim, above the terminal).** Every tab has a bar over its terminal (30px, in `shell.html`) showing which session it is
+  ("Session main" or "Session #19") and two **icon buttons** with a hover explanation (no text labels): **Switch session** and **New session**.
+  Both act on **that tab's session only**: on the home tab the main session, on a card tab that card's session, never another tab's.
+  - **New session:** after a confirmation (the conversation is archived, not deleted; work in progress stops; for a card that adopted a session,
+    the link ends) the page calls `POST /api/sessions/<id>/reset`; the server moves `.sessions/<id>` (and its `.cwd`) into
+    `.sessions/archive/<id>-<UTC time>` (never overwriting an earlier archive), and only the terminal iframe is restarted, so the launcher finds
+    no stored id and starts a new conversation with the usual first prompt.
+  - **Switch session:** a dropdown of that id's sessions, the current one marked and the archived ones newest first, each with a label (the
+    transcript's generated title, else its first real message; the launcher prompt is skipped), when it was last active, and "started elsewhere" for
+    an adopted one, plus a **one-line summary of what it was last doing**. The labels are read from Claude's own transcripts (`~/.claude/projects/<dir>/<session id>.jsonl`, or under `CLAUDE_CONFIG_DIR`):
+    only the start and the end of each file, never the whole file. Picking an archived one asks for confirmation, then
+    `POST /api/sessions/<id>/switch` with `{"name":"<archive name>"}` archives the current session (if any) and moves the picked one back to
+    `.sessions/<id>`, and only the terminal restarts. So New session and Switch session can undo each other: nothing is deleted.
+  - **The one-line summary** is written **when a session is archived** (New session, or the one left behind by a Switch), never kept up to date while it
+    runs, and Claude does not write it. The server takes the first sentence of Claude's last reply (replies lead with the answer, so this is "what it
+    was doing"), found by reading the transcript backward a chunk at a time (up to 16 MB, skipping sub-agent and tool-only messages, so huge request blobs
+    near the end do not hide it); with no reply it uses "You asked: <the last real message>". It is stored next to the archived id as
+    `.sessions/archive/<name>.summary`. An older archive without one gets it the first time the list is opened (a small, one-time write), and a session
+    restored by Switch loses its stale note (it is rewritten when it is archived next). The running session shows no summary. It is not a model
+    summary: it only quotes the last reply.
+  - **Delete for good (the X on each row, the current session's too).** After a red confirmation (it says: erased from this computer, gone from
+    `claude --resume` and /resume too, cannot be undone; for the current session, that it ends and the terminal starts a fresh one; for an adopted one,
+    that the original conversation in the other project goes too), `POST /api/sessions/<id>/delete` with `{"name":"<archive name>"}` (or no name for the
+    current one). The server removes our session file (and its `.cwd` and `.summary`) and **Claude's own files for that session id**, found only through
+    ids read from our session files, never from the browser, and only when the id has the exact uuid shape: the transcript in every project folder and the
+    folder beside it, `file-history/`, `session-env/`, `debug/` and `todos/` entries named with the id, the project's `sessions-index.json` entry, and the
+    prompts that session added to `history.jsonl` (every other line stays byte for byte; files keep their permissions). The running-process registry
+    (`sessions/`) is left alone. For the current session the page first closes the terminal (which ends that Claude process, so it cannot write
+    again) and the server sweeps once more 2.5 seconds later in case a closing process wrote one last time. **Tests must use a scratch
+    `CLAUDE_CONFIG_DIR`**, never the real `~/.claude`.
+  - **API:** `GET /api/sessions/<id>` (stored? adopted?), `GET .../history` (`{current, archived:[{name, at, label, summary, updated, adopted, resumeId}]}`),
+    `POST .../reset`, `POST .../switch`, `POST .../delete`. `<id>` is only `main` or the number of an existing card (else 404); a switch `name` must match
+    `<id>-<UTC time>` for that same id (never a path, and never another id's archive); the write guards are the same as the card API.
+  - To resume outside the app: `claude --resume <resumeId>`. The Settings gear stays for app-wide actions and does not carry these.
 
 ## Cards
 

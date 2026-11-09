@@ -7,7 +7,9 @@
 //   /api/config      -> public settings (app name, terminal port, Linear base URL)
 //   /api/cards       -> GET every card; POST creates a card in the Inbox (title, description), or from a template ({template, values, instructions?}); "topics": true files the new card in Topics instead of the Inbox
 //   /api/templates   -> GET the card templates (what the + dialog offers)
+//   /api/version     -> GET { server: <boot id>, shell: <shell.html mtime> }: the shell polls it to tell you when a refresh is available (it is never reloaded on its own)
 //   /api/open-vscode -> POST (no arguments): runs `code <this project's folder>` so VS Code opens the project; the folder is fixed, never taken from the request
+//   /api/sessions/<id> -> GET whether a Claude session is stored for main or a card (and whether it was adopted); .../history lists it and the archived ones; POST .../reset archives it (next start is new), .../switch {name} swaps an archived one back in, .../delete [{name}] erases one for good
 //   /api/cards/<n>   -> POST status / priority / inbox / ticket / notion / project / pr / title / description / notes changes
 //   /api/cards/<n>/tasks -> GET the card's tasks; POST add / update / remove / move
 //   /api/cards/<n>/artifact -> GET the attached claude.ai artifact (or null); .../artifact/page its saved copy, sandboxed; POST {url,title,html} attaches, {remove:true} detaches
@@ -48,6 +50,178 @@ const CONFIG = {
 };
 
 const isNumber = (s) => /^\d+$/.test(s);
+// "New session" (the bar above the terminal): move a session's stored id (and its adopted directory, if any) into .sessions/archive/ so the
+// next terminal start for that tab begins a new conversation. Nothing is deleted: the old id stays there and `claude --resume <id>` still works.
+function archiveSession(id) {
+  const file = path.join(SESSIONS, id);
+  if (!fs.existsSync(file)) return null;
+  const dir = path.join(SESSIONS, 'archive');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  let name = `${id}-${stamp}`, n = 1;
+  while (fs.existsSync(path.join(dir, name))) name = `${id}-${stamp}-${++n}`;
+  let uuid = ''; try { uuid = fs.readFileSync(file, 'utf8').split('\n')[0].trim(); } catch { /* unreadable: no summary */ }
+  fs.renameSync(file, path.join(dir, name));
+  if (fs.existsSync(file + '.cwd')) fs.renameSync(file + '.cwd', path.join(dir, name + '.cwd'));
+  saveSummary(path.join(dir, name), uuid); // the one-line "what it was doing", written now so nothing has to keep it up to date
+  return name;
+}
+// Session history for the switcher next to "New session": the stored session plus everything archived for the same id, each with a short label
+// taken from Claude's own transcript (~/.claude/projects/<dir>/<session id>.jsonl, or under CLAUDE_CONFIG_DIR): its generated title when it has one,
+// else the first real message. Only the start and the end of the file are read, so a long session stays quick.
+const LAUNCH_PROMPT = /^(This is the main workspace session|This session is dedicated to card)/;
+const claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'); // where Claude Code keeps its own session files
+function transcriptFile(uuid) {
+  const root = path.join(claudeDir(), 'projects');
+  if (!/^[0-9a-f-]{36}$/i.test(uuid)) return null;
+  try { for (const d of fs.readdirSync(root)) { const f = path.join(root, d, uuid + '.jsonl'); if (fs.existsSync(f)) return f; } } catch { /* no transcripts */ }
+  return null;
+}
+// One line about what the session was last doing: the first sentence of Claude's last reply (it leads with the answer), found by reading the
+// transcript from the end, a chunk at a time, so a long session with huge request blobs near the end still works. Only done when a session is
+// archived (and once, later, for older archives), never on every open of the list. Falls back to the last thing you asked.
+function summaryLine(text) {
+  const lines = String(text).replace(/```[\s\S]*?```/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').split('\n')
+    .map((l) => l.replace(/^\s*(?:[-*\u2022>#]+|\d+[.)])\s+/, '').replace(/[*_`]+/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const m = lines[0].match(/^(.{20,}?[.!?])(?:\s|$)/);
+  const one = m ? m[1] : lines[0];
+  return one.length > 150 ? one.slice(0, 147).trimEnd() + '\u2026' : one;
+}
+function summarizeSession(uuid) {
+  const file = transcriptFile(uuid);
+  if (!file) return '';
+  const CHUNK = 524288, BUDGET = 16 * 1024 * 1024, textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.filter((x) => x && x.type === 'text').map((x) => x.text).join(' ') : '').trim();
+  let fd; try { fd = fs.openSync(file, 'r'); } catch { return ''; }
+  try {
+    let pos = fs.fstatSync(fd).size, carry = Buffer.alloc(0), scanned = 0, asked = '';
+    while (pos > 0 && scanned < BUDGET) {
+      const len = Math.min(CHUNK, pos); pos -= len; scanned += len;
+      const buf = Buffer.alloc(len); fs.readSync(fd, buf, 0, len, pos);
+      let data = Buffer.concat([buf, carry]), start = 0;
+      if (pos > 0) { // the first line may continue in the chunk before: keep its bytes for the next round (a giant line is dropped, not kept forever)
+        const nl = data.indexOf(10);
+        if (nl === -1) { carry = data.length > BUDGET ? Buffer.alloc(0) : data; continue; }
+        carry = data.subarray(0, nl); start = nl + 1;
+      } else carry = Buffer.alloc(0);
+      const lines = data.toString('utf8', start).split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].startsWith('{') || lines[i].length > 400000) continue;
+        let j; try { j = JSON.parse(lines[i]); } catch { continue; }
+        if (!j.message || j.isSidechain || j.isMeta) continue;
+        const t = textOf(j.message.content);
+        if (!t) continue;
+        if (j.type === 'assistant') return summaryLine(t);
+        if (j.type === 'user' && !asked && !t.startsWith('<') && !LAUNCH_PROMPT.test(t)) asked = t;
+      }
+    }
+    return asked ? 'You asked: ' + summaryLine(asked) : '';
+  } finally { fs.closeSync(fd); }
+}
+// The summary lives next to the archived session id as <name>.summary. Older archives get theirs the first time the list is opened.
+function saveSummary(archiveFile, uuid) {
+  try { const t = uuid && summarizeSession(uuid); if (t) fs.writeFileSync(archiveFile + '.summary', t + '\n'); } catch { /* no summary: the list just shows the title */ }
+}
+// Delete a session for good, the way the X button in the list asks for: Claude's own files for that session id, so it is gone from `claude --resume`
+// and /resume too: its transcript (every project folder) and the folder beside it, the checkpoints, environment and debug files, the project's
+// session index entry, and the prompts it added to the prompt history. Only ever called with an id read from our own session files, never one
+// that came from the browser, and every path is built from that exact id. The running-process registry (sessions/) is left alone.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function rewriteKeepingMode(file, text) { // atomic, and the file keeps its permissions
+  const mode = fs.statSync(file).mode & 0o777, tmp = file + '.barad-tmp';
+  fs.writeFileSync(tmp, text, { mode }); fs.renameSync(tmp, file);
+}
+function eraseClaudeSession(uuid) {
+  if (!UUID.test(uuid)) return 0;
+  const root = claudeDir();
+  let removed = 0;
+  const rm = (p) => { try { if (fs.existsSync(p)) { fs.rmSync(p, { recursive: true, force: true }); removed++; } } catch { /* left in place */ } };
+  const named = (dir) => { try { for (const f of fs.readdirSync(dir)) if (f === uuid || f.startsWith(uuid + '.') || f.startsWith(uuid + '-')) rm(path.join(dir, f)); } catch { /* no such folder */ } };
+  try {
+    for (const d of fs.readdirSync(path.join(root, 'projects'))) {
+      const dir = path.join(root, 'projects', d);
+      rm(path.join(dir, uuid + '.jsonl')); rm(path.join(dir, uuid));
+      const index = path.join(dir, 'sessions-index.json');
+      try {
+        const j = JSON.parse(fs.readFileSync(index, 'utf8'));
+        if (Array.isArray(j.entries) && j.entries.some((e) => e && e.sessionId === uuid)) { j.entries = j.entries.filter((e) => !(e && e.sessionId === uuid)); rewriteKeepingMode(index, JSON.stringify(j, null, 2) + '\n'); removed++; }
+      } catch { /* no index, or not one we understand: untouched */ }
+    }
+  } catch { /* no projects folder */ }
+  for (const sub of ['file-history', 'session-env', 'debug', 'todos']) named(path.join(root, sub));
+  try {
+    const history = path.join(root, 'history.jsonl');
+    const lines = fs.readFileSync(history, 'utf8').split('\n');
+    const keep = lines.filter((l) => { if (!l.includes(uuid)) return true; try { return JSON.parse(l).sessionId !== uuid; } catch { return true; } }); // every other line stays byte for byte
+    if (keep.length !== lines.length) { rewriteKeepingMode(history, keep.join('\n')); removed++; }
+  } catch { /* no history file */ }
+  return removed;
+}
+// name given: that archived session; no name: the stored (current) one. Returns null when there is nothing to delete.
+function deleteSession(id, name) {
+  const current = name === undefined;
+  if (!current && (typeof name !== 'string' || !ARCHIVE_NAME(id).test(name))) return null;
+  const file = current ? path.join(SESSIONS, id) : path.join(SESSIONS, 'archive', name);
+  if (!fs.existsSync(file)) return null;
+  let uuid = ''; try { uuid = fs.readFileSync(file, 'utf8').split('\n')[0].trim(); } catch { /* unreadable: only our own files go */ }
+  const adopted = fs.existsSync(file + '.cwd');
+  for (const f of [file, file + '.cwd', file + '.summary']) { try { fs.rmSync(f, { force: true }); } catch { /* leave it */ } }
+  const erased = eraseClaudeSession(uuid);
+  // The terminal of a running session is closed first, but a process that is still ending may write its transcript once more: sweep again shortly after.
+  if (current && uuid) { const t = setTimeout(() => eraseClaudeSession(uuid), 2500); if (t.unref) t.unref(); }
+  return { current, adopted, erased };
+}
+function sessionLabel(uuid) {
+  const file = transcriptFile(uuid);
+  if (!file) return { label: '', updated: '' };
+  const chunk = (from, len) => { const fd = fs.openSync(file, 'r'); try { const b = Buffer.alloc(len); const n = fs.readSync(fd, b, 0, len, from); return b.toString('utf8', 0, n); } finally { fs.closeSync(fd); } };
+  const size = fs.statSync(file).size;
+  const head = chunk(0, Math.min(size, 262144));
+  const tail = size > 262144 ? chunk(Math.max(0, size - 131072), 131072) : '';
+  let title = '', first = '';
+  for (const text of [head, tail]) for (const line of text.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let j; try { j = JSON.parse(line); } catch { continue; } // a chunk can start or end in the middle of a line
+    if (j.type === 'ai-title' && typeof j.aiTitle === 'string' && j.aiTitle.trim()) title = j.aiTitle.trim();
+    else if (!first && j.type === 'user' && j.message) {
+      const c = j.message.content;
+      const t = (typeof c === 'string' ? c : Array.isArray(c) ? c.filter((x) => x && x.type === 'text').map((x) => x.text).join(' ') : '').replace(/\s+/g, ' ').trim();
+      if (t && !t.startsWith('<') && !LAUNCH_PROMPT.test(t)) first = t;
+    }
+  }
+  return { label: (title || first).slice(0, 90), updated: fs.statSync(file).mtime.toISOString() };
+}
+const ARCHIVE_NAME = (id) => new RegExp('^' + id + '-(\\d{8})T(\\d{6})Z(?:-\\d+)?$');
+function sessionHistory(id) {
+  const read = (f) => { try { return fs.readFileSync(f, 'utf8').split('\n')[0].trim(); } catch { return ''; } };
+  const entry = (extra, uuid) => ({ ...extra, resumeId: uuid, ...sessionLabel(uuid) });
+  const cur = path.join(SESSIONS, id);
+  const current = fs.existsSync(cur) ? entry({ adopted: fs.existsSync(cur + '.cwd') }, read(cur)) : null;
+  let archived = [];
+  try {
+    const re = ARCHIVE_NAME(id);
+    archived = fs.readdirSync(path.join(SESSIONS, 'archive')).map((name) => ({ name, m: name.match(re) })).filter((x) => x.m).map((x) => {
+      const d = x.m[1], t = x.m[2];
+      const at = new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +t.slice(0, 2), +t.slice(2, 4), +t.slice(4, 6))).toISOString();
+      const f = path.join(SESSIONS, 'archive', x.name);
+      if (!fs.existsSync(f + '.summary')) saveSummary(f, read(f));
+      return entry({ name: x.name, at, adopted: fs.existsSync(f + '.cwd'), summary: read(f + '.summary') }, read(f));
+    }).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.name < b.name ? 1 : -1));
+  } catch { /* nothing archived yet */ }
+  return { id, current, archived };
+}
+// Swap: the stored session is archived (if there is one) and the chosen archived one becomes the stored session again.
+function switchSession(id, name) {
+  if (typeof name !== 'string' || !ARCHIVE_NAME(id).test(name)) return null; // the name is matched against a fixed pattern: never a path
+  const src = path.join(SESSIONS, 'archive', name);
+  if (!fs.existsSync(src)) return null;
+  const archived = archiveSession(id);
+  const dest = path.join(SESSIONS, id);
+  fs.renameSync(src, dest);
+  if (fs.existsSync(src + '.cwd')) fs.renameSync(src + '.cwd', dest + '.cwd');
+  try { fs.rmSync(src + '.summary', { force: true }); } catch { /* a leftover note is harmless */ } // it runs again, so its summary is rewritten when it is archived next
+  return { archived, restored: name };
+}
 const isTaskId = (s) => /^\d+-\d+$/.test(s);
 const readCounter = (file) => parseInt(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '0', 10) || 0;
 
@@ -152,6 +326,7 @@ const isTicketLink = (v) => {
   if (!t || t.length > 500 || /\s/.test(t)) return false;
   try { const u = new URL(t); return (u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password; } catch { return false; }
 };
+const BOOT_ID = String(Date.now()); // changes whenever the server restarts (node --watch restarts it on every save of server.js)
 const MAX_ARTIFACT = 6 * 1024 * 1024;
 const MAX_TEXT_BODY = 16 * 1024 * 1024; // request-size safety net for text fields (card description, task updates): there is no character limit on them
 function readArtifact(dir) {
@@ -589,7 +764,49 @@ http.createServer((req, res) => {
       });
     });
   }
+  const sr = p.match(/^\/api\/sessions\/(main|\d+)(\/reset|\/history|\/switch|\/delete)?$/);
+  if (sr) { // only "main" and the number of an existing card; the id never becomes a path of its own
+    const id = sr[1];
+    if (id !== 'main' && !findCard(id)) return send(res, 404, 'Not found');
+    if (sr[2] === '/history') {
+      if (req.method !== 'GET') return send(res, 405, 'Method not allowed');
+      return send(res, 200, JSON.stringify(sessionHistory(id)), TYPES['.json']);
+    }
+    if (sr[2] === '/delete') { // {name} deletes that archived session for good; no name deletes the current one (the page closes its terminal first)
+      if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        const r = deleteSession(id, d.name);
+        if (!r) return send(res, 404, 'Not found');
+        send(res, 200, JSON.stringify({ ok: true, id, ...r }), TYPES['.json']);
+      });
+    }
+    if (sr[2] === '/switch') {
+      if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+      if (!guardJson(req, res)) return;
+      return readJson(req, res, (d) => {
+        const r = switchSession(id, d.name);
+        if (!r) return send(res, 404, 'Not found');
+        send(res, 200, JSON.stringify({ ok: true, id, ...r }), TYPES['.json']);
+      });
+    }
+    if (!sr[2]) {
+      if (req.method !== 'GET') return send(res, 405, 'Method not allowed');
+      const file = path.join(SESSIONS, id);
+      return send(res, 200, JSON.stringify({ id, exists: fs.existsSync(file), adopted: fs.existsSync(file + '.cwd') }), TYPES['.json']);
+    }
+    if (req.method !== 'POST') return send(res, 405, 'Method not allowed');
+    if (!guardJson(req, res)) return;
+    return readJson(req, res, () => {
+      const adopted = fs.existsSync(path.join(SESSIONS, id + '.cwd'));
+      send(res, 200, JSON.stringify({ ok: true, id, archived: archiveSession(id), adopted }), TYPES['.json']);
+    });
+  }
   if (p === '/api/templates' && req.method === 'GET') return send(res, 200, JSON.stringify(listTemplates().map((t) => ({ id: t.id, name: t.name, place: t.place, status: t.status, blanks: t.blanks }))), TYPES['.json']);
+  if (p === '/api/version') { // for the shell's "Update available" note: the server restarted, or shell.html changed
+    let shell = 0; try { shell = Math.round(fs.statSync(path.join(ROOT, 'shell.html')).mtimeMs); } catch { /* missing: 0 */ }
+    return send(res, 200, JSON.stringify({ server: BOOT_ID, shell }), TYPES['.json']);
+  }
   if (p === '/api/options') return send(res, 200, JSON.stringify(OPTIONS), TYPES['.json']);
   if (p === '/api/config') return send(res, 200, JSON.stringify(CONFIG), TYPES['.json']);
 
@@ -756,7 +973,7 @@ http.createServer((req, res) => {
     const file = path.join(card.dir, m[2] || 'index.html');
     if (!file.startsWith(card.dir + path.sep)) return send(res, 403, 'Forbidden'); // stay inside the card's folder
     const isReport = file === path.join(card.dir, 'index.html');
-    return sendFile(res, file, true, isReport ? '<script src="/static/ticket.js"></script><script src="/static/blocked.js" defer></script><script src="/static/tasks.js" defer></script>' : '');
+    return sendFile(res, file, true, isReport ? '<script src="/static/dialog.js"></script><script src="/static/ticket.js"></script><script src="/static/blocked.js" defer></script><script src="/static/tasks.js" defer></script>' : '');
   }
   send(res, 404, 'Not found');
 }).listen(PORT, HOST, () => console.log(`${CONFIG.appName}: http://${HOST}:${PORT}/`));

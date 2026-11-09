@@ -30,7 +30,43 @@
   .icon-btn { width:34px; height:34px; display:flex; align-items:center; justify-content:center; padding:0; }
   .icon-btn svg { width:20px; height:20px; display:block; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
   #split { display:flex; flex:1 1 0; min-height:0; width:100%; }
-  #left  { flex:0 0 var(--left, 50%); min-width:200px; }
+  #left  { flex:0 0 var(--left, 50%); min-width:200px; display:flex; flex-direction:column; }
+  /* Slim bar above the terminal: which session this terminal is, and a button to start a new one. It acts on this tab's session only. */
+  #termbar { flex:0 0 30px; display:flex; align-items:center; justify-content:flex-start; gap:8px; padding:0 8px 0 12px; background:#161b22; border-bottom:1px solid var(--line); color:#8b949e; font:12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #termbar b { color:#e6edf3; font-weight:600; }
+  #termbar .btns { display:flex; align-items:center; gap:4px; margin-left:auto; }
+  /* "Update available": the shell is never reloaded on its own (it hosts the terminal), so it only tells you when to refresh */
+  #upd { display:flex; align-items:center; gap:6px; margin-left:10px; padding:1px 3px 1px 9px; border:1px solid #9e6a03; border-radius:999px; color:#e3b341; font-size:11.5px; white-space:nowrap; }
+  #upd[hidden] { display:none; }
+  #upd button { font:inherit; color:#e3b341; background:none; border:1px solid #9e6a03; border-radius:999px; padding:1px 8px; cursor:pointer; }
+  #upd button:hover { background:#3a2a05; }
+  #termbar .ib { position:relative; width:26px; height:22px; display:flex; align-items:center; justify-content:center; padding:0; color:#c9d1d9; background:none; border:1px solid transparent; border-radius:6px; cursor:pointer; }
+  #termbar .ib svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; display:block; }
+  #termbar .ib:hover:not(:disabled), #termbar .ib[aria-expanded="true"] { background:#21262d; border-color:var(--line); }
+  #termbar .ib:focus-visible { outline:2px solid var(--accent); }
+  #termbar .ib:disabled { opacity:.5; cursor:default; }
+  /* hover explanation (shown at once, unlike the browser's title delay) */
+  #termbar .ib[data-tip]:hover::after, #termbar .ib[data-tip]:focus-visible::after { content:attr(data-tip); position:absolute; top:calc(100% + 6px); right:0; z-index:70; padding:5px 8px; background:#21262d; color:#e6edf3; border:1px solid var(--line); border-radius:6px; font:12px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; white-space:nowrap; pointer-events:none; }
+  #left { position:relative; }
+  #sess-pop { position:absolute; top:34px; right:8px; z-index:60; width:min(400px, calc(100% - 16px)); max-height:60vh; overflow:auto; padding:6px; background:#161b22; border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 24px rgba(1,4,9,.6); color:#e6edf3; font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #sess-pop[hidden] { display:none; }
+  #sess-pop h4 { margin:2px 8px 6px; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#8b949e; }
+  #sess-pop .msg { margin:4px 8px 8px; color:#8b949e; font-size:12px; }
+  #sess-pop .msg.bad { color:#f85149; }
+  #sess-pop .item { display:flex; align-items:stretch; gap:2px; margin-bottom:2px; }
+  #sess-pop .row { display:block; flex:1 1 auto; min-width:0; text-align:left; padding:7px 8px; font:inherit; color:inherit; background:none; border:1px solid transparent; border-radius:8px; cursor:pointer; }
+  #sess-pop .rm { flex:none; width:30px; display:flex; align-items:center; justify-content:center; padding:0; color:#8b949e; background:none; border:1px solid transparent; border-radius:8px; cursor:pointer; }
+  #sess-pop .rm svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; display:block; }
+  #sess-pop .rm:hover { color:#f85149; background:#21262d; border-color:var(--line); }
+  #sess-pop .rm:focus-visible { outline:2px solid var(--accent); }
+  #sess-pop .row:hover:not(:disabled) { background:#21262d; border-color:var(--line); }
+  #sess-pop .row:disabled { cursor:default; opacity:1; background:#0d1117; }
+  #sess-pop .row .t { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+  #sess-pop .row .t.none { font-weight:500; color:#8b949e; font-style:italic; }
+  #sess-pop .row .s { display:block; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#c9d1d9; font-size:12.5px; }
+  #sess-pop .row .m { display:block; margin-top:2px; font-size:11.5px; color:#8b949e; }
+  #sess-pop .row .badge { display:inline-block; margin-right:6px; padding:0 6px; border-radius:999px; border:1px solid var(--accent); color:var(--accent); font-size:11px; }
+  #term { flex:1 1 0; min-height:0; height:auto; }
   #right { flex:1 1 0; min-width:200px; }
   iframe { width:100%; height:100%; border:0; display:block; background:var(--bg); }
   #gutter { flex:0 0 8px; cursor:col-resize; background:var(--line); transition:background .15s; touch-action:none; }
@@ -60,18 +96,34 @@
   </nav>
 </header>
 <div id="split">
-  <div id="left"><iframe id="term" title="Terminal"></iframe></div>
+  <div id="left">
+    <div id="termbar"><span>Session <b id="sess-name">main</b></span>
+      <span id="upd" hidden><span id="upd-text">Update available</span><button id="upd-btn" type="button" title="Refresh this tab">Refresh</button></span>
+      <span class="btns">
+      <button id="switch-session" class="ib" type="button" data-tip="Switch session: go back to an earlier one" aria-label="Switch session" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/><polyline points="12 7 12 12 15 14"/></svg>
+      </button>
+      <button id="new-session" class="ib" type="button" data-tip="New session: archive this one and start fresh" aria-label="New session">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="7" x2="12" y2="13"/><line x1="9" y1="10" x2="15" y2="10"/></svg>
+      </button>
+    </span></div>
+    <div id="sess-pop" hidden role="menu" aria-label="Sessions"></div>
+    <iframe id="term" title="Terminal"></iframe>
+  </div>
   <div id="gutter" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
   <div id="right"><iframe id="content" title="Content"></iframe></div>
 </div>
+<script src="/static/dialog.js"></script>
 <script>
   // One Claude session per tab: the home tab runs the "main" workspace session (display/UI changes),
   // each /card/<id> tab runs a session scoped to that ticket (ttyd runs card-terminal.sh <id>).
-  // The terminal iframe is set once and never reloaded or re-navigated by this page.
+  // The terminal iframe is set once; the only time this page reloads it is the "New session" button (after the server has archived the stored session).
   const cardId = (p) => (p.match(/^\/card\/([^/]+)\/?$/) || [])[1];
   const sessionFor = (p) => cardId(p) || 'main';
   const term = document.getElementById('term');
-  let termId = null;
+  let termId = null, termUrl = '';
+  // Restart only the terminal (the stored session decides what it starts): about:blank first closes the old connection, which ends the old Claude process.
+  const restartTerm = () => { term.src = 'about:blank'; setTimeout(() => { term.src = termUrl; }, 400); };
   // Settings from the server (example.env): app name and the terminal's port.
   let cfg = { ttydPort: 7681 };
   // Tab title says which session this tab is: "<app name> - main" on the home tab, "<app name> - #<card number>" on a card.
@@ -86,7 +138,7 @@
   const layout = (p) => {
     const id = sessionFor(p);
     if (termId && termId !== id) { location.replace(p); return false; } // this tab's terminal belongs to another session
-    if (!termId) { termId = id; ready.then(() => { term.src = 'http://' + location.hostname + ':' + cfg.ttydPort + '/?arg=' + encodeURIComponent(id); }); }
+    if (!termId) { termId = id; ready.then(() => { termUrl = 'http://' + location.hostname + ':' + cfg.ttydPort + '/?arg=' + encodeURIComponent(id); term.src = termUrl; }); }
     return true;
   };
 
@@ -139,6 +191,132 @@
       .catch((err) => { note.classList.add('bad'); note.textContent = err.message; })
       .finally(() => { vscodeBtn.disabled = false; });
   });
+  // New session: ask the server to archive this tab's stored session (never another tab's), then restart only the terminal; it starts a new conversation.
+  document.getElementById('sess-name').textContent = sessionFor(location.pathname) === 'main' ? 'main' : '#' + sessionFor(location.pathname);
+  const newBtn = document.getElementById('new-session');
+  newBtn.addEventListener('click', async () => {
+    const id = termId || sessionFor(location.pathname);
+    let info = {};
+    try { info = await (await fetch('/api/sessions/' + encodeURIComponent(id))).json(); } catch (_) { /* the server decides on reset */ }
+    const items = ['The current conversation is archived, not deleted. You can switch back to it from the Switch session list.', 'Anything Claude is doing right now stops.'];
+    if (info.adopted) items.push('This card uses a session that was started elsewhere. That link ends: the card gets a normal new card session.');
+    const ok = await baradDialog.confirm({ title: 'Start a new session?', who: id === 'main' ? 'Main session' : 'Card #' + id, items, confirmText: 'Start new session' });
+    if (!ok) return;
+    newBtn.disabled = true;
+    try {
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) throw new Error(String(r.status));
+      restartTerm(); newBtn.disabled = false;
+    } catch (_) { newBtn.disabled = false; baradDialog.notice({ title: 'Could not start a new session', items: ['Try again, or reload this tab.'] }); }
+  });
+  // Switch session: a dropdown of this tab's sessions (the current one and the archived ones, newest first). Picking an archived one swaps it in:
+  // the server archives the current session and makes the picked one the stored session again, then only the terminal restarts.
+  const switchBtn = document.getElementById('switch-session'), sessPop = document.getElementById('sess-pop');
+  const closeSess = () => { sessPop.hidden = true; switchBtn.setAttribute('aria-expanded', 'false'); };
+  const ago = (iso) => {
+    const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (!(m >= 0)) return ''; if (m < 1) return 'just now'; if (m < 60) return m + ' min ago';
+    const h = Math.round(m / 60); if (h < 24) return h + ' h ago';
+    const d = Math.round(h / 24); return d < 31 ? d + (d === 1 ? ' day ago' : ' days ago') : new Date(iso).toLocaleDateString();
+  };
+  const row = (e, current, id) => {
+    const wrap = document.createElement('div'); wrap.className = 'item'; if (!current) wrap.dataset.archived = '1';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'row'; b.setAttribute('role', 'menuitem'); b.disabled = current;
+    const t = document.createElement('span'); t.className = 't' + (e.label ? '' : ' none'); t.textContent = e.label || '(no title found)'; t.title = e.label || '';
+    let s = null;
+    if (e.summary) { s = document.createElement('span'); s.className = 's'; s.textContent = e.summary; s.title = e.summary; } // what it was last doing, written when it was archived
+    const m = document.createElement('span'); m.className = 'm';
+    if (current) { const bd = document.createElement('span'); bd.className = 'badge'; bd.textContent = 'current'; m.appendChild(bd); }
+    m.appendChild(document.createTextNode((e.updated ? 'active ' + ago(e.updated) : 'archived ' + ago(e.at || '')) + (e.adopted ? ' \u00b7 started elsewhere' : '')));
+    b.append(t); if (s) b.append(s); b.append(m);
+    if (!current) b.addEventListener('click', () => pick(e, id));
+    const x = document.createElement('button'); // delete for good (a separate button: a button cannot hold another button)
+    x.type = 'button'; x.className = 'rm'; x.title = 'Delete this session for good'; x.setAttribute('aria-label', 'Delete this session for good: ' + (e.label || 'no title found'));
+    x.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+    x.addEventListener('click', () => erase(e, current, id, wrap));
+    wrap.append(b, x);
+    return wrap;
+  };
+  // Delete for good: the server erases the stored session id and every file Claude keeps for it, so it is gone from `claude --resume` too.
+  // The session running in this terminal is ended first (a closed terminal ends its Claude process), and the terminal then starts a fresh one.
+  async function erase(e, current, id, wrap) {
+    const items = ['The whole conversation is erased from this computer. It will not show in this list, and it will not be in claude --resume or /resume either.', 'This cannot be undone.'];
+    if (current) items.unshift('This is the session running in this terminal right now. It ends, and the terminal starts a fresh one.');
+    if (e.adopted) items.push('This session was started elsewhere (in another project). Deleting it removes that original conversation too.');
+    const ok = await baradDialog.confirm({
+      title: 'Delete this session for good?', who: id === 'main' ? 'Main session' : 'Card #' + id, tone: 'danger', confirmText: 'Delete for good', items,
+      quote: { title: e.label || '(no title found)', text: e.summary || '', meta: (current ? 'Current session' : e.updated ? 'Active ' + ago(e.updated) : 'Archived ' + ago(e.at || '')) + (e.adopted ? ' \u00b7 started elsewhere' : '') }
+    });
+    if (!ok) return;
+    if (current) closeSess();
+    switchBtn.disabled = newBtn.disabled = true;
+    try {
+      if (current) { term.src = 'about:blank'; await new Promise((r) => setTimeout(r, 900)); } // end the running Claude before its files go
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(current ? {} : { name: e.name }) });
+      if (!r.ok) throw new Error(String(r.status));
+      if (current) restartTerm();
+      else {
+        wrap.remove();
+        if (!sessPop.querySelector('[data-archived]')) { const n = document.createElement('div'); n.className = 'msg'; n.textContent = 'No earlier sessions yet. After New session, the one you leave shows up here.'; sessPop.appendChild(n); }
+      }
+    } catch (_) {
+      if (current) restartTerm();
+      baradDialog.notice({ title: 'Could not delete the session', items: ['Try again, or reload this tab.'] });
+    }
+    switchBtn.disabled = newBtn.disabled = false;
+  }
+  async function pick(e, id) {
+    const ok = await baradDialog.confirm({
+      title: 'Switch to this session?',
+      who: id === 'main' ? 'Main session' : 'Card #' + id,
+      quote: { title: e.label || '(no title found)', text: e.summary || '', meta: (e.updated ? 'Active ' + ago(e.updated) : 'Archived ' + ago(e.at || '')) + (e.adopted ? ' \u00b7 started elsewhere' : '') },
+      items: ['The current session is archived, so you can switch back to it from this same list.', 'Anything Claude is doing right now stops.'],
+      confirmText: 'Switch session'
+    });
+    if (!ok) return;
+    closeSess(); switchBtn.disabled = newBtn.disabled = true;
+    try {
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: e.name }) });
+      if (!r.ok) throw new Error(String(r.status));
+      restartTerm();
+    } catch (_) { baradDialog.notice({ title: 'Could not switch the session', items: ['Try again, or reload this tab.'] }); }
+    switchBtn.disabled = newBtn.disabled = false;
+  }
+  switchBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!sessPop.hidden) return closeSess();
+    const id = termId || sessionFor(location.pathname);
+    sessPop.hidden = false; switchBtn.setAttribute('aria-expanded', 'true');
+    sessPop.textContent = ''; const loading = document.createElement('div'); loading.className = 'msg'; loading.textContent = 'Loading...'; sessPop.appendChild(loading);
+    try {
+      const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/history');
+      if (!r.ok) throw new Error(String(r.status));
+      const h = await r.json();
+      sessPop.textContent = '';
+      const head = document.createElement('h4'); head.textContent = id === 'main' ? 'Main sessions' : 'Sessions of card #' + id; sessPop.appendChild(head);
+      if (h.current) sessPop.appendChild(row(h.current, true, id));
+      h.archived.forEach((e) => sessPop.appendChild(row(e, false, id)));
+      if (!h.archived.length) { const n = document.createElement('div'); n.className = 'msg'; n.textContent = 'No earlier sessions yet. After New session, the one you leave shows up here.'; sessPop.appendChild(n); }
+    } catch (_) { sessPop.textContent = ''; const bad = document.createElement('div'); bad.className = 'msg bad'; bad.textContent = 'Could not load the sessions.'; sessPop.appendChild(bad); }
+  });
+  document.addEventListener('click', (ev) => { if (!sessPop.hidden && !sessPop.contains(ev.target) && !switchBtn.contains(ev.target)) closeSess(); });
+  window.addEventListener('blur', closeSess); // a click inside the terminal or content frame moves focus there
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !sessPop.hidden) { closeSess(); switchBtn.focus(); } });
+  // "Update available": this page is never reloaded on its own (reloading restarts the terminal), so it only says when shell.html changed or the
+  // server restarted, and you refresh when Claude is idle. The first answer of /api/version is the baseline for this tab.
+  const upd = document.getElementById('upd');
+  let baseline = null;
+  const checkVersion = () => fetch('/api/version', { cache: 'no-store' }).then((r) => r.json()).then((v) => {
+    if (!baseline) { baseline = v; return; }
+    const what = [v.shell !== baseline.shell && 'the terminal bar', v.server !== baseline.server && 'the server'].filter(Boolean);
+    if (!what.length) return;
+    upd.title = 'Updated: ' + what.join(' and ') + '. Refreshing this tab restarts the terminal (the session is kept), so do it when Claude is idle.';
+    upd.hidden = false;
+  }).catch(() => { /* the server is restarting: the next check answers */ });
+  document.getElementById('upd-btn').addEventListener('click', () => location.reload());
+  checkVersion(); setInterval(checkVersion, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkVersion(); });
   window.addEventListener('popstate', () => show(location.pathname));
   show(location.pathname);
 

@@ -125,6 +125,7 @@
     </aside>
   </div>
 </div>
+<script src="/static/dialog.js"></script>
 <script src="/static/ticket.js"></script>
 <script src="/static/blocked.js"></script>
 <script>
@@ -144,9 +145,10 @@
   const wireTickets = (root, cards) => root.querySelectorAll('[data-ticket-edit]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.closest('[data-id]').dataset.id, card = cards.find((c) => c.id === id);
-      const v = prompt('Ticket link (ClickUp, Linear, Jira, Trello...) or key like ABC-123. Leave empty to remove.', card.ticket || '');
-      if (v === null) return;
-      post('/api/cards/' + encodeURIComponent(id), { ticket: v }).catch(() => alert('Not a valid ticket: paste a link (ClickUp, Linear, Jira, Trello...) or a key like ABC-123'));
+      baradDialog.prompt({ title: 'Ticket', message: 'Paste a link from ClickUp, Linear, Jira, Trello or any tracker, or a key like ABC-123. Leave it empty to remove the ticket.', value: card.ticket || '', placeholder: 'https://... or ABC-123', confirmText: 'Save', maxLength: 500 }).then((v) => {
+        if (v === null) return;
+        post('/api/cards/' + encodeURIComponent(id), { ticket: v }).catch(() => baradDialog.notice({ title: 'Not a valid ticket', items: ['Paste a link (ClickUp, Linear, Jira, Trello...) or a key like ABC-123.'] }));
+      });
     });
   });
   const byNumber = (a, b) => (a.number || 1e9) - (b.number || 1e9);
@@ -192,8 +194,8 @@
       ? { template: tplSel.value, values: Object.fromEntries([...blanksEl.querySelectorAll('input')].map((i) => [i.dataset.key, i.value])), instructions: document.getElementById('f-extra').value, topics: topicsEl.checked }
       : { title: titleEl.value, description: descEl.value, topics: topicsEl.checked };
     post('/api/cards', body)
-      .then((card) => { if (card && card.warning) alert('Card #' + card.number + ' was created.\n\n' + card.warning + '\nThe blanks it could not fill in are shown as {{name}} in the card.'); close(); }) // the server's file watcher reloads this page, so the new item shows up
-      .catch(() => alert(tplSel.value ? 'Could not create the card from the template. Check the link (https://github.com/<org>/<repo>/pull/<number>).' : 'Could not add the card'))
+      .then((card) => { close(); if (card && card.warning) baradDialog.notice({ title: 'Card #' + card.number + ' was created', items: [card.warning, 'The blanks it could not fill in are shown as {{name}} in the card.'] }); }) // the server's file watcher reloads this page, so the new item shows up
+      .catch(() => baradDialog.notice(tplSel.value ? { title: 'Could not create the card', items: ['Check the pull request link (https://github.com/<org>/<repo>/pull/<number>).'] } : { title: 'Could not add the card', items: ['Try again.'] }))
       .finally(() => { save.disabled = false; });
   });
 
@@ -238,7 +240,7 @@
       btn.addEventListener('click', () => {
         btn.disabled = true;
         post('/api/cards/' + encodeURIComponent(btn.closest('.item').dataset.id), { inbox: false })
-          .catch(() => { alert('Could not move the card'); btn.disabled = false; });
+          .catch(() => { baradDialog.notice({ title: 'Could not move the card', items: ['Try again.'] }); btn.disabled = false; });
       });
     });
 
@@ -271,7 +273,7 @@
       const id = draggingId;
       if (!id || !inbox.some((c) => c.id === id)) return;
       post('/api/cards/' + encodeURIComponent(id), { inbox: false }) // the file watcher reloads the page, same as the button
-        .catch(() => alert('Could not move the card'));
+        .catch(() => baradDialog.notice({ title: 'Could not move the card', items: ['Try again.'] }));
     });
 
     // ---- Topics grid (title only)
@@ -312,7 +314,7 @@
             sel.dataset.value = sel.value;
             sel.disabled = true;
             post('/api/cards/' + encodeURIComponent(card.id), { [field]: sel.value })
-              .catch(() => { alert('Could not save'); location.reload(); })
+              .catch(() => baradDialog.notice({ title: 'Could not save', items: ['The page reloads to show what is stored.'] }).then(() => location.reload()))
               .finally(() => { sel.disabled = false; });
           });
         });

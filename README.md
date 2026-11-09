@@ -41,6 +41,7 @@ All settings are environment variables; a local `.env` is loaded if present (see
 | `TTYD_PORT` / `TTYD_INTERFACE` | `7681` / `lo0` or `lo` | Browser terminal |
 | `TTYD_CLOSE_SIGNAL` | `SIGKILL` | Signal sent to a session when its browser tab closes. The default `SIGHUP` left Claude Code running in the background |
 | `TTYD_BACKGROUND` | `#000000` | Terminal background color (hex) |
+| `TTYD_LEAVE_ALERT` | `0` | `1` brings back ttyd's "Leave site?" popup when a tab is closed or refreshed. Off by default; closing a tab ends its Claude process either way |
 | `DATA_DIR` | `data` | Where your private data lives (`inbox/`, `topics/`, `.sessions/`, `.counter`): a folder inside the repo (relative to the repo folder) or a full path like `/home/you/barad-dur-data` or `~/barad-dur-data` |
 | `LINEAR_BASE_URL` | empty | Only for bare ticket keys such as `ABC-123`: the base they are linked to, e.g. `https://linear.app/<workspace>/issue/`. A pasted ticket link (ClickUp, Linear, Jira, Trello, ...) needs no setting |
 | `CLAUDE_BIN` | `claude` | Claude Code executable |
@@ -53,6 +54,8 @@ All settings are environment variables; a local `.env` is loaded if present (see
 The main page has two columns: the **Inbox** (cards awaiting a decision on whether they will be worked on) and
 **Topics** (cards you are working on). Move a card from the Inbox to Topics with its button or by dragging it. Every
 card can have **tasks** (the TODO column on its page) and, for new cards, **tabs** in the content area (an optional Artifact tab that shows an attached claude.ai artifact, Scoping, Findings, and any you add with +), and each card gets its own Claude session in its own tab.
+
+**Sessions:** the slim bar above each terminal shows which session it is and has two icon buttons. **New session** archives only that terminal's session (the main one on the home tab, a card's own on a card tab) and starts a fresh conversation. **Switch session** lists that terminal's earlier sessions (with a title, a one-line note of what each was last doing, and when it was last active) so you can go back to one; the one you leave is archived, so you can switch back. Nothing is deleted by those two, and an archived session can also be resumed with `claude --resume <id>`. The **X** on a row deletes that session for good: after a confirmation it removes the conversation and Claude's own files for it, so it also disappears from `claude --resume`. That cannot be undone.
 
 **Card templates** save retyping the same card. The Inbox **+** dialog has a **Template** picker (default: none). The shipped **Code review** template asks for a GitHub pull request link only: the title, size, draft flag and ticket key are read from the pull request with the GitHub CLI (`gh`, read-only), and the card gets the review instructions as its description. The dialog also has an optional **Extra instructions** box (they are added to the card's description, so its Claude session follows them, for example "also look closely at the migrations") and a **Create in Topics** checkbox to skip the Inbox. Cards made from the Code review template also get a **task progress bar** (under the TODO title and in the card page, between the tiles and the description), so you can watch the review advance as its tasks are marked Done; other cards are unaffected. If `gh` is missing or not signed in, the card is still created with the link and a short warning. Templates are plain files in `data/templates/<id>/template.json` (gitignored; its `defaults` section is the place for anything specific to your team, such as the name of your own review skill; the default one is copied there once from `examples/templates/` and your edits are never overwritten), and `GET /api/templates` lists them.
 
@@ -70,6 +73,7 @@ data/
   inbox/done/, topics/done/   finished cards, so the active folders only hold pending or working ones
     <card>/tasks/<n>-<k>/     one folder per task (card number - task number); tasks/done/ for finished tasks
   .sessions/<n>          Claude session id of each card;  .counter  last card number handed out
+  .sessions/archive/     sessions retired with the "New session" button (kept, so they can still be resumed)
 ```
 
 Finished work moves into `done/` by itself when its status becomes Done, so you can archive or delete those folders
