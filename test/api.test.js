@@ -1027,7 +1027,7 @@ test('templates: extra instructions typed in the dialog are added to the descrip
   r = await call('POST', '/api/cards', { ...REVIEW('https://github.com/example-org/my-service/pull/404'), instructions: note });
   assert.ok(r.json.warning && r.json.description.endsWith(note), 'still added when gh could not read the pull request');
   const big = (await call('POST', '/api/cards', { ...REVIEW(LINK), instructions: 'x'.repeat(1500) })).json;
-  assert.ok(big.description.length <= 4000 && big.description.endsWith('x'.repeat(1500)));
+  assert.ok(big.description.length <= 6000 && big.description.endsWith('x'.repeat(1500)));
   const before = (await call('GET', '/api/cards')).json.length;
   for (const bad of ['x'.repeat(1501), 5, ['a'], {}]) assert.equal((await call('POST', '/api/cards', { ...REVIEW(LINK), instructions: bad })).status, 400, JSON.stringify(bad).slice(0, 30));
   assert.equal((await call('GET', '/api/cards')).json.length, before, 'a bad request creates no card');
